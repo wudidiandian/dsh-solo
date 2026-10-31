@@ -1,0 +1,29 @@
+# dsh-solo relay 的 systemd 单元
+#
+# 安装：
+#   sudo cp relay-linux-amd64 /opt/dsh-solo/relay && sudo chmod +x /opt/dsh-solo/relay
+#   sudo cp relay.service /etc/systemd/system/
+#   （可选）把 -bark-url 换成你的 Bark 推送地址
+#   sudo systemctl daemon-reload && sudo systemctl enable --now dsh-relay
+#
+# 关键参数：
+#   --addr 127.0.0.1:8787  只监听回环，公网仅经 Caddy 的 443(WSS) 接入
+#   --trust-proxy          从 Caddy 注入的 X-Forwarded-For 解析真实 IP（单 IP 上限生效）
+
+[Unit]
+Description=DSH-SOLO Relay (WSS behind Caddy)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/opt/dsh-solo/relay --addr 127.0.0.1:8787 --trust-proxy --max-rooms 256 --max-conn-per-ip 8 --max-global-conns 512 --msg-rate 80 --msg-burst 160
+Restart=always
+RestartSec=3
+# 加固：非特权动态用户 + 文件系统只读
+DynamicUser=yes
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

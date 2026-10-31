@@ -1,0 +1,17 @@
+# dsh-solo relay 容器镜像（多阶段构建，最终镜像 ~15MB）
+# 构建（仓库根目录）：docker build -f deploy/Dockerfile.relay -t dsh-solo/relay .
+FROM golang:1.22-alpine AS build
+WORKDIR /src
+COPY server/go.mod server/go.sum ./
+RUN go mod download
+COPY server/ ./
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/relay ./cmd/relay
+
+FROM alpine:3.19
+RUN apk add --no-cache ca-certificates tzdata
+COPY --from=build /out/relay /usr/local/bin/relay
+RUN adduser -D -u 10001 relay
+USER relay
+EXPOSE 8787
+ENTRYPOINT ["relay"]
+CMD ["-addr", "0.0.0.0:8787"]

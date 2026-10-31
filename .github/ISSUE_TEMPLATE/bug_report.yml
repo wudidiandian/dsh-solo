@@ -1,0 +1,55 @@
+name: Bug 报告
+description: 报告一个可复现的问题
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请先搜索现有 issue 避免重复。**注意抹掉日志里的 deviceToken、服务器 IP 等敏感信息。**
+  - type: dropdown
+    id: component
+    attributes:
+      label: 问题组件
+      options:
+        - App（移动端）
+        - agent（电脑端插件）
+        - relay（中转服务）
+        - 配对页
+        - 文档
+    validations:
+      required: true
+  - type: dropdown
+    id: relay-mode
+    attributes:
+      label: relay 部署方式
+      options:
+        - 自建（VPS / Docker）
+        - 内网直连 / Tailscale / Cloudflare Tunnel
+        - 官方云通道
+        - 其他
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      placeholder: 1. … 2. …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: 预期行为 / 实际行为
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 日志片段（已脱敏）
+      render: shell
+  - type: input
+    id: versions
+    attributes:
+      label: 版本信息（App 版本 / 宿主版本 / relay 版本）
+    validations:
+      required: true

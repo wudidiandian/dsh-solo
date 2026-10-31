@@ -1,0 +1,60 @@
+# dsh-solo relay 自建一键部署（BYOS）
+#
+# 组成：relay（Go）+ Caddy（自动 TLS 反代，对外只开 80/443）
+# 前置：一台有公网 IP 的服务器 + 已解析到它的域名（姿势 A）；
+#       无域名/不想暴露公网见 SELF_HOST.md 的姿势 B（Cloudflare Tunnel）/ C（Tailscale）。
+#
+# Configuration: see ../docs/RELEASING.md.
+# node scripts/configure.mjs
+# docker compose --env-file .generated/deploy.env -f deploy/docker-compose.yml up -d --build
+#
+# 注意：
+#   - relay 只映射到 127.0.0.1，公网无法绕过 Caddy 直连 8787
+#   - relay 开启 --trust-proxy：从 Caddy 注入的 X-Forwarded-For 解析真实 IP，
+#     使单 IP 连接数上限对多用户生效（仅在可信反代后开启！）
+
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.relay
+    image: dsh-solo/relay:latest
+    restart: unless-stopped
+    # 端口只暴露给宿主回环：公网入口统一走 Caddy 的 WSS
+    ports:
+      - "127.0.0.1:8787:8787"
+    # 按需调整防护参数（负数=关闭对应项，详见 README 启动参数表）
+    command:
+      - "-addr"
+      - "0.0.0.0:8787"
+      - "--trust-proxy"
+      - "--max-rooms"
+      - "64"
+      - "--max-conn-per-ip"
+      - "8"
+      - "--max-upload"
+      - "10MB"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8787/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      RELAY_DOMAIN: ${RELAY_DOMAIN:?Set RELAY_DOMAIN via --env-file .generated/deploy.env}
+    restart: unless-stopped
+    depends_on:
+      - relay
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.docker:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

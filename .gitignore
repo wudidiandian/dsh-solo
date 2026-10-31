@@ -1,0 +1,51 @@
+# Node
+node_modules/
+dist/
+*.tsbuildinfo
+
+# 本地 SDK（Flutter / Android cmdline-tools 等，装在工作区内）
+.sdk/
+
+# Go
+server/bin/
+server/relay.exe
+*.test.exe
+
+# Env & secrets
+.env
+.env.*
+*.pem
+*.cer
+*.p7b
+*.p12
+
+# Flutter / 构建产物
+build/
+
+# 本机启动配置（含绝对路径，不入库）
+cordis.yml
+local-cordis*.yml
+# 设备配对令牌（凭证，不入库）
+.dsh-solo/
+# dsh home 搬迁副本（沙箱启动用，含会话/运行时缓存，不入库）
+.dsh-home/
+# 运营方案（商业敏感内容，不入库）
+运营方案.md
+
+# IDE / OS
+.idea/
+.vscode/
+Thumbs.db
+.DS_Store
+
+# Private distribution settings, generated defaults and signing credentials
+config/distribution.local.json
+.generated/
+packages/agent/src/generated-defaults.ts
+*.jks
+*.keystore
+app/android/key.properties
+private-docs/
+
+# Locally compiled relay executable
+deploy/relay-linux-*

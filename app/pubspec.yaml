@@ -1,0 +1,32 @@
+name: dsh_solo
+description: "DSH-SOLO 移动端遥控器：随时随地掌控电脑上的 AI 任务"
+publish_to: 'none'
+version: 0.1.0+1
+
+environment:
+  sdk: ^3.13.5
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  # WebSocket 客户端（VM / Android / Web 三端通用实现）
+  web_socket_channel: ^3.0.0
+  # 本地配置持久化（relay 地址 + 设备令牌）
+  path_provider: ^2.1.0
+  # 扫码配对（解析电脑端配对页二维码，自动填入 relay 地址与令牌）
+  # 7.4.2: Android 启动路径重写 + CameraX 初始化失败改走 errorBuilder（PR #1765），
+  # 修复 6.x 在部分真机（华为/HarmonyOS）上启动即 NPE 的问题
+  mobile_scanner: ^7.4.2
+  # 附件（2026-10-28）：拍照 / 相册选图（系统 picker，Android 13+ 无需权限）
+  image_picker: ^1.1.2
+  # AI 回复 Markdown 渲染（2026-10-28）：标题/列表/粗体/代码块
+  flutter_markdown: ^0.7.7
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^6.0.0
+
+flutter:
+  uses-material-design: true

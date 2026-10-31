@@ -1,0 +1,5 @@
+{
+  "relayUrl": "ws://127.0.0.1:8787/ws",
+  "legacyRelayUrl": "",
+  "relayDomain": "relay.example.com"
+}

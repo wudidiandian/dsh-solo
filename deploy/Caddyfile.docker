@@ -1,0 +1,5 @@
+{$RELAY_DOMAIN} {
+  @relay path /ws /healthz
+  reverse_proxy @relay relay:8787
+  respond 404
+}

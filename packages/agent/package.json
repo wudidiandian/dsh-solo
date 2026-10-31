@@ -1,0 +1,57 @@
+{
+  "name": "dsh-solo-agent",
+  "version": "0.1.0",
+  "description": "DSH-SOLO 电脑端插件：Cordis 插件，注入 DeepSeek Harness 上下文并向 relay 维持长连接（手机远程掌控电脑 Agent）",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/wudidiandian/dsh-solo.git",
+    "directory": "packages/agent"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek",
+    "harness",
+    "cordis",
+    "remote-control",
+    "mobile",
+    "approval",
+    "cross-device"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "bundle": "node ../../scripts/configure.mjs && tsc -p tsconfig.json && node scripts/bundle.mjs",
+    "prepublishOnly": "npm run build && npm run bundle",
+    "test": "vitest run",
+    "prebuild": "node ../../scripts/configure.mjs",
+    "pretest": "node ../../scripts/configure.mjs"
+  },
+  "dsh": {
+    "id": "dsh-solo",
+    "displayName": "DSH-SOLO",
+    "entry": "dist/dsh-solo-agent.bundle.js",
+    "engines": {
+      "dsh": ">=0.2.0"
+    }
+  },
+  "devDependencies": {
+    "@dsh-solo/protocol": "*",
+    "@types/node": "^22.0.0",
+    "@types/qrcode": "^1.5.6",
+    "@types/ws": "^8.5.12",
+    "cordis": "^4.0.0-rc.11",
+    "qrcode": "^1.5.4",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.9",
+    "ws": "^8.18.0"
+  }
+}

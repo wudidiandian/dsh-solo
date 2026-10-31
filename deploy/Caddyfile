@@ -1,0 +1,26 @@
+# dsh-solo relay 的 WSS 反向代理（Caddy）
+#
+# 使用方法：
+#   1. 把下方 <你的域名> 全部替换为实际域名（如 dsh.example.com）
+#   2. 放到 VPS 的 /etc/caddy/Caddyfile（追加或替换）
+#   3. systemctl reload caddy
+# Caddy 会自动申请并续期 Let's Encrypt 证书（要求 80/443 对公网可达）。
+#
+# relay 侧必须以以下方式启动（配合本文件）：
+#   relay --addr 127.0.0.1:8787 --trust-proxy
+#   - 只监听回环：公网无法绕过 TLS 直连 8787
+#   - --trust-proxy：从 Caddy 注入的 X-Forwarded-For 解析真实 IP，
+#     使单 IP 连接数上限对多用户生效（仅在可信反代后开启！）
+
+<你的域名> {
+	# WebSocket 接入：透传升级握手，附真实 IP
+	reverse_proxy /ws 127.0.0.1:8787 {
+		header_up X-Real-IP {remote_host}
+	}
+
+	# 健康检查
+	reverse_proxy /healthz 127.0.0.1:8787
+
+	# relay 只有两个端点，其余路径一律拒绝
+	abort
+}

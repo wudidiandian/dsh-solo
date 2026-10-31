@@ -1,17 +1,21 @@
-// Typed event surface for Cordis (koishi 4 / @deepseek-ai 系)。
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { setTimeout as delay } from 'node:timers/promises'
 import type { Context } from 'cordis'
 import { AgentCore, type HarnessServices } from './core.js'
+import { registerPairingBridge } from './pairing-bridge.js'
 import { PairingServer } from './pairing.js'
 import { resolveDeviceToken } from './token.js'
 import { SoloRelayClient } from './ws-client.js'
-import { listDirectorySafe, scanShallowDirectories } from './workspace.js'
+import { listDirectorySafe } from './workspace.js'
+
+import { listProjects, requireProject } from './projects.js'
 
 import { defaultRelayUrl } from './generated-defaults.js'
 
-export const DEFAULT_RELAY_URL = defaultRelayUrl
+export const DEFAULT_RELAY_URL: string = defaultRelayUrl
 
 /** 插件配置：由 cordis.yml / 宿主配置界面注入 */
 export interface Config {
@@ -21,19 +25,30 @@ export interface Config {
   deviceToken?: string
   /** 允许手机端访问的根目录列表（远程目录树扫描范围） */
   workspaceRoots?: string[]
-}
-
-declare module 'cordis' {
-  interface Events {
-    'dispose'(): void
-  }
+  /** Optional persistent data directory; defaults to workspace/.dsh-solo or home/.dsh-solo. */
+  stateDir?: string
 }
 
 /** 依赖的宿主服务（cordis 注入声明，缺失的按特性探测降级） */
-export const inject = ['sessions', 'llm', 'approval', 'agents', 'agentDefaultModel']
+export const inject = ['sessions', 'llm', 'approval', 'agents', 'agentDefaultModel', 'workspaceRegistry', 'agentPresets', 'connection']
 
 /** Cordis 插件入口：把 Harness 上下文桥接到 AgentCore */
 export function apply(ctx: Context, config: Config) {
+  let core: AgentCore | null = null
+  let client: SoloRelayClient | null = null
+  let pairing: PairingServer | null = null
+  let disposePairingBridge: (() => unknown) | null = null
+  const lifetime = new AbortController()
+  // Cordis owns effects; it does not emit a generic "dispose" event.
+  ctx.effect(() => () => {
+    lifetime.abort()
+    core?.stop()
+    client?.stop()
+    pairing?.stop()
+    void disposePairingBridge?.()
+    process.off('uncaughtException', onUncaughtException)
+  })
+  const wait = (ms: number) => delay(ms, undefined, { signal: lifetime.signal }).catch(() => {})
   // 默认模型兜底（2026-10-27）：宿主"默认模型"经 ctx.agentDefaultModel 管理并持久化
   // （实机核实：currentSelection() 返回 {provider, model, reasoningEffort}，重启保留）。
   // 但全新环境首次启动时为空——此时新会话回落 deepseek-official（API key 路线），
@@ -49,7 +64,8 @@ export function apply(ctx: Context, config: Config) {
       // 等模型目录就绪（账号路 /models 拉取为异步，最多等 10s）
       let first: { provider: string; model: string } | null = null
       for (let i = 0; i < 10 && !first; i++) {
-        await new Promise((r) => setTimeout(r, 1000))
+        await wait(1000)
+        if (lifetime.signal.aborted) return
         try {
           const models = (await llm.listModels()) as any[]
           if (Array.isArray(models) && models.length) {
@@ -61,27 +77,17 @@ export function apply(ctx: Context, config: Config) {
         }
       }
       if (!first) first = { provider: 'deepseek-account', model: 'deepseek-flash' } // 目录拉取失败时的保守兜底（官方账号路模型）
+      if (lifetime.signal.aborted) return
       adm.saveSelection(first)
       console.log(`[dsh-solo-agent] default model was empty; set to ${first.provider}/${first.model}`)
     } catch (err) {
       console.error('[dsh-solo-agent] default-model fallback failed:', (err as Error).message)
     }
   })()
-  let core: AgentCore | null = null
-  let client: SoloRelayClient | null = null
-  let pairing: PairingServer | null = null
-
-  // 'dispose' 生命周期事件由宿主（koishi/dsh）层增强，裸 cordis 类型未声明，边界处收窄
-  ;(ctx as any).on('dispose', () => {
-    core?.stop()
-    client?.stop()
-    pairing?.stop()
-  })
-
   // 进程级兜底：WebSocket/TLS 的异步写异常偶发逃逸到 uncaughtException
   // （例：relay 证书未就绪时的 EPROTO / 半开 socket 的滞留写）。网络类错误仅记日志，
   // 避免拖垮 dsh 宿主进程；其余异常按原语义 rethrow。
-  process.on('uncaughtException', (err) => {
+  function onUncaughtException(err: Error) {
     const code = (err as NodeJS.ErrnoException).code ?? ''
     if (
       ['EPROTO', 'ECONNRESET', 'EPIPE'].includes(code) ||
@@ -91,7 +97,8 @@ export function apply(ctx: Context, config: Config) {
       return
     }
     throw err
-  })
+  }
+  process.on('uncaughtException', onUncaughtException)
 
   // Bootstrap 是异步的：首次启动需生成并持久化设备令牌；失败仅记日志不抛出
   void bootstrap().catch((err) => {
@@ -100,7 +107,7 @@ export function apply(ctx: Context, config: Config) {
 
   async function bootstrap(): Promise<void> {
     // 状态目录：<workspaceRoots[0] ?? cwd>/.dsh-solo（token 文件与会话历史同处）
-    const stateDir = join(config.workspaceRoots?.[0] ?? process.cwd(), '.dsh-solo')
+    const stateDir = config.stateDir ?? join(config.workspaceRoots?.[0] ?? homedir(), '.dsh-solo')
     const historyDir = join(stateDir, 'history')
     // mkdir at startup; AgentCore also mkdirs lazily before the first write.
     mkdir(historyDir, { recursive: true }).catch((err) => {
@@ -109,6 +116,7 @@ export function apply(ctx: Context, config: Config) {
 
     // 令牌解析：显式配置 > 已持久化文件 > 自动生成并写入
     const deviceToken = await resolveDeviceToken(config.deviceToken, stateDir)
+    if (lifetime.signal.aborted) return
     const relayUrl = config.relayUrl ?? DEFAULT_RELAY_URL
 
     const relayClient = new SoloRelayClient({
@@ -143,6 +151,7 @@ export function apply(ctx: Context, config: Config) {
     // 重试 + 成功后缓存，避免每次快照都白等。
     let modelsCache: unknown[] | null = null
     const services: HarnessServices = {
+    listProjects: () => listProjects(anyCtx.workspaceRegistry),
     listModels: async () => {
       // 快速失败版（2026-10-28）：只试一次，失败/为空立即返回 []，不阻塞快照上报。
       // 目录就绪由 bootstrap 的轮询负责——拿到非空目录后触发 core.publishSnapshot()
@@ -197,7 +206,8 @@ export function apply(ctx: Context, config: Config) {
       // cwd 必须落在工作区内，否则会话持久化进 _no-cwd 桶，宿主 web UI 加载不到其历史；
       // agentOptions 必须绑定模型（宿主默认值来自 agentDefaultModel 服务），否则系统
       // 提示词组装时 {model} 变量无值，整个 turn 空跑（deployment/persona-pref 报错）
-      const cwd = opts.cwd ?? config.workspaceRoots?.[0]
+      const project = opts.projectId ? await requireProject(anyCtx.workspaceRegistry, opts.projectId) : null
+      const cwd = project?.path ?? opts.cwd ?? config.workspaceRoots?.[0]
       const defaults = anyCtx.agentDefaultModel?.currentSelection?.()
       const model = opts.model ?? defaults?.model
       // App 端指定模型时在模型目录里反查 provider，保证 model/provider 配对
@@ -211,9 +221,19 @@ export function apply(ctx: Context, config: Config) {
           // 目录不可用时维持默认 provider
         }
       }
+      // Match the desktop Session controller: resolve the configured default and
+      // mount it inside the unpublished Agent scope, before any prompt can run.
+      const presets = anyCtx.agentPresets
+      const preset = await presets.resolve()
+      if (lifetime.signal.aborted) throw new Error('Plugin stopped')
       const handle = await anyCtx.agents.create({
         sessionId: `session-${randomUUID()}`,
-        ...(cwd ? { meta: { cwd } } : {}),
+        meta: { ...(cwd ? { cwd } : {}), agentPreset: preset.id },
+        setup: async (agentCtx: Context) => {
+          if (lifetime.signal.aborted) throw new Error('Plugin stopped')
+          await presets.mount(agentCtx, preset.id)
+          if (lifetime.signal.aborted) throw new Error('Plugin stopped')
+        },
         ...(model
           ? {
               agentOptions: {
@@ -224,6 +244,13 @@ export function apply(ctx: Context, config: Config) {
           : {}),
       })
       const session = agentToSession(handle.agent)
+      try {
+        if (lifetime.signal.aborted) throw new Error('Plugin stopped')
+        if (project) await project.attachSession(session.id)
+      } catch (err) {
+        await handle.dispose()
+        throw err
+      }
       handles.set(session.id, handle)
       // 快照重报：新会话立即进入 relay 缓存并广播在线 App（否则 App 重连拿到
       // 的仍是旧快照，列表"延迟几分钟"才出现新会话）
@@ -297,9 +324,8 @@ export function apply(ctx: Context, config: Config) {
       deviceToken,
       relayUrl,
       rotateDeviceToken: (t) => relayClient.reconnectWithToken(t),
-      buildSnapshot: async () => ({
-        dirTree: await scanShallowDirectories(config.workspaceRoots ?? [], 2),
-      }),
+      // Project names are requested on demand; do not pre-scan project files.
+      buildSnapshot: async () => ({}),
       listDir: (p) => listDirectorySafe(p, config.workspaceRoots ?? []),
     })
 
@@ -313,6 +339,17 @@ export function apply(ctx: Context, config: Config) {
       },
     })
     pairing.start()
+    disposePairingBridge = registerPairingBridge(anyCtx.connection, {
+      getToken: () => core?.getDeviceToken() ?? '',
+      getRelayUrl: () => relayUrl,
+      getBrowserUrl: () => pairing?.address ?? null,
+      isConnected: () => relayClient.isConnected(),
+      isActive: () => !lifetime.signal.aborted,
+      resetToken: async () => {
+        if (!core) throw new Error('agent not ready')
+        return core.resetDeviceToken()
+      },
+    })
 
     core.start()
 
@@ -351,7 +388,8 @@ export function apply(ctx: Context, config: Config) {
     // App 端收到新快照后自动补全模型列表。
     void (async () => {
       for (let i = 0; i < 20; i++) {
-        await new Promise((r) => setTimeout(r, 3000))
+        await wait(3000)
+        if (lifetime.signal.aborted) return
         try {
           const models = await services.listModels()
           if (Array.isArray(models) && models.length) {

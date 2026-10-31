@@ -1,0 +1,11 @@
+# Optional override. Management is reachable only through the host loopback port.
+# Supply both env files as described in MONITORING.md.
+services:
+  relay:
+    environment:
+      DSH_ADMIN_ADDR: "0.0.0.0:8788"
+      DSH_ADMIN_USER: ${DSH_ADMIN_USER:-admin}
+      DSH_ADMIN_PASSWORD: ${DSH_ADMIN_PASSWORD:?Set a unique monitor password of at least 16 characters}
+      DSH_NODE_NAME: ${DSH_NODE_NAME:-relay-1}
+    ports:
+      - "127.0.0.1:8788:8788"

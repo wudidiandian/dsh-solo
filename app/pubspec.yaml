@@ -1,7 +1,7 @@
 name: dsh_solo
 description: "DSH-SOLO 移动端遥控器：随时随地掌控电脑上的 AI 任务"
 publish_to: 'none'
-version: 0.1.0+1
+version: 0.1.4+5
 
 environment:
   sdk: ^3.13.5
@@ -22,6 +22,8 @@ dependencies:
   image_picker: ^1.1.2
   # AI 回复 Markdown 渲染（2026-10-28）：标题/列表/粗体/代码块
   flutter_markdown: ^0.7.7
+  package_info_plus: ^10.2.2
+  url_launcher: ^6.3.3
 
 dev_dependencies:
   flutter_test:
@@ -30,3 +32,5 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/LICENSE

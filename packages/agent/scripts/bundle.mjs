@@ -26,8 +26,19 @@ await build({
   format: 'esm',
   target: 'node18',
   external: ['cordis', 'bufferutil', 'utf-8-validate'],
-  sourcemap: true,
+  sourcemap: false,
   minify: false,
   logLevel: 'info',
 })
 console.log('[bundle] dist/dsh-solo-agent.bundle.js OK')
+
+await build({
+  entryPoints: ['client/index.js'],
+  outfile: 'dist/client.js',
+  bundle: true,
+  platform: 'browser',
+  format: 'iife',
+  target: 'es2022',
+  sourcemap: false,
+  logLevel: 'info',
+})

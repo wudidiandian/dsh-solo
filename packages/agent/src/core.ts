@@ -39,9 +39,10 @@ export interface AgentSessionLike {
 }
 
 export interface HarnessServices {
+  listProjects?(): Promise<unknown[]>
   listModels(): Promise<unknown[]>
   listSessions(): Promise<unknown[]>
-  createSession(opts: { cwd?: string; model?: string }): Promise<AgentSessionLike>
+  createSession(opts: { cwd?: string; model?: string; projectId?: string }): Promise<AgentSessionLike>
   getSession(id: string): Promise<AgentSessionLike | null>
   /** 重命名会话（写入 session/title 事件，last-wins） */
   renameSession(id: string, title: string): Promise<void>
@@ -105,6 +106,7 @@ export interface RelayLike {
   send(env: Envelope): void
   on(event: 'connected', cb: () => void): unknown
   on(event: 'command', cb: (env: Envelope) => void): unknown
+  off?(event: 'connected' | 'command', cb: (...args: any[]) => void): unknown
   /** 连接就绪探测（可选）：周期快照重报在未连接时跳过，避免灌离线队列 */
   isConnected?(): boolean
 }
@@ -123,6 +125,9 @@ export class AgentCore {
   private readonly pendingApprovals = new Map<string, (approved: boolean) => void>()
   private readonly unsubscribes: Array<() => void> = []
   private started = false
+  private stopped = false
+  private generation = 0
+  private snapshotRequest = 0
   /** 周期快照兜底定时器（start 创建，stop 清理） */
   private snapshotTimer: ReturnType<typeof setInterval> | null = null
   /** Per-session event buffer for history replay (capped at HISTORY_BUFFER_LIMIT) */
@@ -157,12 +162,20 @@ export class AgentCore {
   start(): void {
     if (this.started) return
     this.started = true
+    this.stopped = false
+    const generation = ++this.generation
 
-    this.client.on('connected', () => {
-      void this.publishSnapshot()
-    })
-    this.client.on('command', (env) => {
-      void this.handleCommand(env)
+    const onConnected = () => {
+      if (this.started && this.generation === generation) void this.publishSnapshot()
+    }
+    const onCommand = (env: Envelope) => {
+      if (this.started && this.generation === generation) void this.handleCommand(env)
+    }
+    this.client.on('connected', onConnected)
+    this.client.on('command', onCommand)
+    this.unsubscribes.push(() => {
+      this.client.off?.('connected', onConnected)
+      this.client.off?.('command', onCommand)
     })
     this.unsubscribes.push(
       this.opts.services.onSessionEvent((sessionId, event) => this.forwardEvent(sessionId, event)),
@@ -177,6 +190,9 @@ export class AgentCore {
   }
 
   stop(): void {
+    this.stopped = true
+    this.generation++
+    this.snapshotRequest++
     if (this.snapshotTimer) {
       clearInterval(this.snapshotTimer)
       this.snapshotTimer = null
@@ -233,12 +249,16 @@ export class AgentCore {
    * 就绪后由外部（index.ts bootstrap）再次调用，把补全后的快照重推给 App。
    */
   async publishSnapshot(): Promise<void> {
+    if (this.stopped) return
+    const request = ++this.snapshotRequest
     try {
       const [models, sessions, extra] = await Promise.all([
         this.opts.services.listModels().catch(() => []),
-        this.opts.services.listSessions().catch(() => []),
+        // A failed read must never erase the phone's last valid session list.
+        this.opts.services.listSessions(),
         this.opts.buildSnapshot?.().catch(() => ({})) ?? Promise.resolve({}),
       ])
+      if (this.stopped || request !== this.snapshotRequest) return
       this.client.send(
         makeEnvelope('agent.snapshot', {
           models,
@@ -258,13 +278,14 @@ export class AgentCore {
    * 无意义，durable 的 assistant/message 会在回合结束时补全），不入离线队列。
    */
   sendStreamDelta(sessionId: string, kind: 'text-delta' | 'reasoning-delta' | 'end', text?: string): void {
-    if (!this.client.isConnected?.()) return
+    if (this.stopped || !this.client.isConnected?.()) return
     this.client.send(
       makeEnvelope('session.stream', { kind, text }, { sessionId }),
     )
   }
 
   private forwardEvent(sessionId: string, event: SessionEvent): void {
+    if (this.stopped) return
     this.seq++
     const seqId = this.seq
     this.recordHistory(sessionId, event, seqId)
@@ -394,6 +415,7 @@ export class AgentCore {
   }
 
   private interceptApproval(req: ApprovalRequest): Promise<boolean> {
+    if (this.stopped) return Promise.resolve(false)
     this.seq++
     this.client.send(
       makeEnvelope('session.event', { kind: 'approval_request', approvalId: req.id, ...req }, {
@@ -409,29 +431,40 @@ export class AgentCore {
   }
 
   private async handleCommand(env: Envelope): Promise<void> {
+    if (this.stopped) return
+    const generation = this.generation
+    const isActive = () => !this.stopped && generation === this.generation
     const payload = env.payload as CmdDispatchPayload | undefined
     if (!payload || typeof payload.action !== 'string') return
     const respond = (ok: boolean, result?: unknown, error?: string) => {
-      if (env.reqId) {
+      if (env.reqId && isActive()) {
         this.client.send(makeEnvelope('rpc.response', { ok, result, error }, { reqId: env.reqId }))
       }
     }
 
     try {
       switch (payload.action) {
+        case 'project.list':
+          if (!this.opts.services.listProjects) throw new Error('Project selection requires a newer desktop plugin')
+          respond(true, await this.opts.services.listProjects())
+          break
         case 'session.prompt': {
           const data = payload.data as SessionPromptData
+          if (data.sessionId && data.projectId) throw new Error('Select a project when creating a new session; existing sessions cannot be moved')
           let session = data.sessionId
             ? await this.opts.services.getSession(data.sessionId)
             : null
+          if (!isActive()) return
           if (!session) {
-            session = await this.opts.services.createSession({ cwd: data.cwd, model: data.modelId })
+            session = await this.opts.services.createSession({ cwd: data.cwd, model: data.modelId, projectId: data.projectId })
           }
+          if (!isActive()) return
           if (data.modelId && session.model !== data.modelId) {
             await session.setModel(data.modelId)
           }
           // 附件解析（upload/file 校验路径、url 抓取落盘），失败整体报错
           const attachNote = await this.resolveAttachments(data.attachments)
+          if (!isActive()) return
           await session.submitPrompt(attachNote ? `${data.prompt}\n\n${attachNote}` : data.prompt)
           respond(true, { sessionId: session.id })
           break

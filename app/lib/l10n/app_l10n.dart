@@ -51,6 +51,9 @@ class AppL10n {
       _t('有 $n 项待审批', '$n pending approval${n > 1 ? 's' : ''}');
   String get tapToReview => _t('点击查看并处理', 'Tap to review');
   String get newSession => _t('新会话', 'New session');
+  String get desktopUnavailable => _t('未找到电脑插件，请核对设备令牌，并确认电脑端插件已启用', 'Desktop plugin unavailable. Check the device token and make sure the desktop plugin is enabled.');
+  String get statusCheckingDesktop => _t('正在验证电脑', 'Verifying desktop');
+  String get statusDesktopOffline => _t('电脑未连接', 'Desktop offline');
   String get statusOpen => _t('已连接', 'Connected');
   String get statusConnecting => _t('连接中', 'Connecting');
   String get statusAuthFailed => _t('鉴权失败', 'Auth failed');
@@ -104,6 +107,11 @@ class AppL10n {
   String get addAttachment => _t('添加附件', 'Add attachment');
   String get cameraOption => _t('拍照（压缩后 ≤10MB）', 'Camera (compressed ≤10MB)');
   String get galleryTitle => _t('从相册选择（压缩后 ≤10MB）', 'Photo gallery (compressed ≤10MB)');
+  String get selectProject => _t('选择项目', 'Select project');
+  String get selectProjectHint => _t('在电脑端已有项目下创建新会话，原会话保留', 'Create a new session in a desktop project. Existing sessions are kept.');
+  String get noProjects => _t('暂无可用项目，请先在电脑端添加工作区', 'No projects available. Add a workspace on the desktop first.');
+  String get projectsLoadFailed => _t('无法获取项目，请确认电脑插件已更新并保持在线', 'Cannot load projects. Update the desktop plugin and keep it online.');
+  String get projectSelected => _t('项目已选择，发送消息后创建新会话', 'Project selected. Send a message to create the new session.');
   String get pcFile => _t('电脑文件', 'PC file');
   String get pcFileSubtitle => _t('从电脑工作区目录选择，不占手机流量',
       'Pick from the PC workspace — no phone bandwidth used');

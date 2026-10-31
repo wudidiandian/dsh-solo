@@ -25,6 +25,16 @@ void main() {
       expect(find.text('连接'), findsOneWidget);
     });
 
+    testWidgets('仅连上转发服务器时保留连接首页，不显示新会话或已连接', (tester) async {
+      final state = AppState()..relayStatus = RelayStatus.open;
+      state.applyEnvelope(makeEnvelope(MsgType.agentSnapshot, {'sessions': [], 'models': []}));
+      await tester.pumpWidget(MaterialApp(home: HomePage(state: state)));
+      expect(find.text('连接到你的电脑'), findsOneWidget);
+      expect(find.text('已连接'), findsNothing);
+      expect(find.text('电脑未连接'), findsOneWidget);
+      expect(find.byType(FloatingActionButton), findsNothing);
+    });
+
     testWidgets('已连接且快照为空时提示新会话', (tester) async {
       final state = AppState();
       state.applyEnvelope(makeEnvelope(MsgType.agentSnapshot, {
@@ -35,6 +45,7 @@ void main() {
         'timestamp': 1,
       }));
       state.relayStatus = RelayStatus.open;
+      state.agentOnline = true;
       state.relayError = null;
 
       await tester.pumpWidget(MaterialApp(home: HomePage(state: state)));
@@ -52,6 +63,7 @@ void main() {
         'summary': 'rm -rf /',
       }));
       state.relayStatus = RelayStatus.open;
+      state.agentOnline = true;
 
       await tester.pumpWidget(MaterialApp(home: HomePage(state: state)));
       await tester.pump();

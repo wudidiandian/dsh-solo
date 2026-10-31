@@ -166,24 +166,30 @@ function sendJson(res: ServerResponse, body: unknown, status = 200): void {
 export class PairingServer {
   private server: Server | null = null
   private port = 0
+  private generation = 0
 
   constructor(private readonly opts: PairingServerOptions) {}
 
   /** Actual page address once listening, e.g. http://127.0.0.1:8790 */
   get address(): string | null {
-    return this.server ? `http://${this.opts.host ?? '127.0.0.1'}:${this.port}` : null
+    return this.server?.listening && this.port ? `http://${this.opts.host ?? '127.0.0.1'}:${this.port}` : null
   }
 
   /** Bind 127.0.0.1, retrying the next port on EADDRINUSE; never throws */
   start(): void {
+    if (this.server) return
+    const generation = ++this.generation
     const base = this.opts.basePort ?? 8790
     const max = this.opts.maxPort ?? 8799
     const host = this.opts.host ?? '127.0.0.1'
     const tryPort = (port: number): void => {
+      if (this.generation !== generation) return
       const server = createServer((req, res) => {
         void this.handle(req, res)
       })
+      this.server = server
       server.on('error', (err: NodeJS.ErrnoException) => {
+        if (this.generation !== generation) return
         if (this.server === server) this.server = null
         if (err.code === 'EADDRINUSE' && port < max) {
           tryPort(port + 1)
@@ -193,7 +199,7 @@ export class PairingServer {
         }
       })
       server.listen(port, host, () => {
-        this.server = server
+        if (this.generation !== generation) { server.close(); return }
         this.port = port
         console.log(`[dsh-solo-agent] pairing page: http://${host}:${port}`)
       })
@@ -202,6 +208,8 @@ export class PairingServer {
   }
 
   stop(): void {
+    this.generation++
+    this.port = 0
     this.server?.close()
     this.server = null
   }
@@ -209,6 +217,13 @@ export class PairingServer {
   private async handle(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = (req.url ?? '/').split('?')[0]
     try {
+      // Public discovery only: never include the relay address or pairing credentials.
+      if (req.method === 'GET' && url === '/api/status') {
+        res.setHeader('Access-Control-Allow-Origin', '*')
+        res.setHeader('Cache-Control', 'no-store')
+        sendJson(res, { service: 'dsh-solo-pairing', url: this.address })
+        return
+      }
       if (req.method === 'GET' && url === '/api/token') {
         sendJson(res, { token: this.opts.getToken(), relayUrl: this.opts.getRelayUrl() })
         return

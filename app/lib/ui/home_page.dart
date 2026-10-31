@@ -10,6 +10,7 @@ import '../state/app_state.dart';
 import 'dir_browser_page.dart';
 import 'pair_scan_page.dart';
 import 'session_page.dart';
+import 'settings_page.dart';
 
 /// 主页
 class HomePage extends StatefulWidget {
@@ -72,7 +73,13 @@ class _HomePageState extends State<HomePage> {
     ).save();
   }
 
-  Future<void> _openSettings() async {
+  void _openSettings() {
+    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => SettingsPage(
+      state: widget.state, onConfigureConnection: _openConnectionSettings,
+    )));
+  }
+
+  Future<void> _openConnectionSettings() async {
     final tokenCtrl = TextEditingController(text: _tokenCtrl.text);
     // 扫码解析出的 relayUrl 静默存入内部值（UI 不展示地址），令牌回填输入框
     String? scannedUrl;
@@ -142,6 +149,7 @@ class _HomePageState extends State<HomePage> {
   }
 
   void _openSession(BuildContext context, String? sessionId) {
+    if (!widget.state.isDesktopConnected) return;
     Navigator.of(context).push(MaterialPageRoute<void>(
       builder: (_) => SessionPage(state: widget.state, sessionId: sessionId),
     ));
@@ -220,7 +228,7 @@ class _HomePageState extends State<HomePage> {
     return ListenableBuilder(
       listenable: state,
       builder: (context, _) {
-        final connected = state.relayStatus == RelayStatus.open;
+        final connected = state.isDesktopConnected;
         return Scaffold(
           appBar: AppBar(
             title: Text(AppL10n.i.appTitle),
@@ -228,7 +236,7 @@ class _HomePageState extends State<HomePage> {
               _StatusChip(state: state),
               IconButton(
                 icon: const Icon(Icons.settings),
-                tooltip: AppL10n.i.connectSettings,
+                tooltip: AppL10n.i.isEn ? 'Settings' : '设置',
                 onPressed: _openSettings,
               ),
               const SizedBox(width: 4),
@@ -236,7 +244,7 @@ class _HomePageState extends State<HomePage> {
           ),
           body: Column(
             children: [
-              if (state.pendingApprovalCount > 0)
+              if (connected && state.pendingApprovalCount > 0)
                 Material(
                   color: Colors.amber.shade100,
                   child: ListTile(
@@ -291,7 +299,9 @@ class _StatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (Color color, String label) = switch (state.relayStatus) {
-      RelayStatus.open => (Colors.green, AppL10n.i.statusOpen),
+      RelayStatus.open when state.isDesktopConnected => (Colors.green, AppL10n.i.statusOpen),
+      RelayStatus.open when state.checkingDesktop => (Colors.orange, AppL10n.i.statusCheckingDesktop),
+      RelayStatus.open => (Colors.orange, AppL10n.i.statusDesktopOffline),
       RelayStatus.connecting => (Colors.orange, AppL10n.i.statusConnecting),
       RelayStatus.fatal => (Colors.red, AppL10n.i.statusAuthFailed),
       RelayStatus.closed => (Colors.orange, AppL10n.i.statusDisconnected),
@@ -321,7 +331,8 @@ class _ConnectForm extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final connecting = state.relayStatus == RelayStatus.connecting;
+    final connecting = state.relayStatus == RelayStatus.connecting ||
+        (!state.isDesktopConnected && state.checkingDesktop);
     return Center(
       child: SingleChildScrollView(
         padding: const EdgeInsets.all(24),
@@ -362,6 +373,12 @@ class _ConnectForm extends StatelessWidget {
                     : const Icon(Icons.link),
                 label: Text(connecting ? AppL10n.i.connecting : AppL10n.i.connect),
               ),
+              if (state.desktopError != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text(state.desktopError!, textAlign: TextAlign.center,
+                      style: const TextStyle(color: Colors.red)),
+                ),
               if (state.relayError != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 12),

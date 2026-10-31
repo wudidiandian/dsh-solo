@@ -1,0 +1,5 @@
+# Standard DSH bundle layer. Override config in the host when self-hosting.
+- insert:
+    - id: dsh-solo-agent
+      name: dsh-solo-agent
+      config: {}

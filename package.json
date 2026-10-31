@@ -1,6 +1,6 @@
 {
   "name": "dsh-solo",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "private": true,
   "description": "DSH-SOLO: DeepSeek Harness 跨端协同系统（电脑端插件 + VPS 中转 + 移动端 App）",
   "workspaces": [
@@ -12,6 +12,9 @@
     "test": "npm run test --workspaces --if-present",
     "test:go": "go -C server test ./...",
     "relay": "go -C server run ./cmd/relay",
-    "configure": "node scripts/configure.mjs"
+    "configure": "node scripts/configure.mjs",
+    "pack:plugin": "npm run build && npm pack --workspace=dsh-solo-agent --pack-destination .generated && node scripts/verify-plugin-package.mjs",
+    "pack:relay": "node scripts/package-relay.mjs",
+    "test:release": "node --test scripts/test/release.test.mjs"
   }
 }

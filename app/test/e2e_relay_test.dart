@@ -63,7 +63,8 @@ void main() {
     }
 
     // 1. 构建并启动真实 relay
-    final relayExe = '$projectRoot\\.sdk\\tmp\\relay-e2e.exe';
+    final relayExe = '$projectRoot/.generated/relay-e2e${Platform.isWindows ? '.exe' : ''}';
+    await Directory('$projectRoot/.generated').create(recursive: true);
     final build = await Process.run(
       go,
       ['build', '-C', '$projectRoot/server', '-o', relayExe, './cmd/relay'],
@@ -177,7 +178,8 @@ void main() {
     final go = await locateGo();
     if (go == null) return;
 
-    final relayExe = '$projectRoot\\.sdk\\tmp\\relay-e2e.exe';
+    final relayExe = '$projectRoot/.generated/relay-e2e${Platform.isWindows ? '.exe' : ''}';
+    await Directory('$projectRoot/.generated').create(recursive: true);
     final build = await Process.run(
       go,
       ['build', '-C', '$projectRoot/server', '-o', relayExe, './cmd/relay'],
@@ -205,7 +207,10 @@ void main() {
         final p = env.payload as Map;
         final action = p['action'];
         final data = p['data'] as Map;
-        if (action == 'file.offer') {
+        if (action == 'device.token.get') {
+          agentCh.sink.add(encodeEnvelope(makeEnvelope(MsgType.rpcResponse,
+            {'ok': true, 'result': {'token': 'e2e-up'}}, {'reqId': env.reqId})));
+        } else if (action == 'file.offer') {
           offers.add(data);
           declaredChunks = data['chunks'] as int;
           agentCh.sink.add(encodeEnvelope(makeEnvelope(
@@ -226,7 +231,7 @@ void main() {
             for (var i = 0; i < declaredChunks; i++) {
               file.addAll(received[i]!);
             }
-            final path = '$projectRoot\\.sdk\\tmp\\e2e-upload-${DateTime.now().millisecondsSinceEpoch}.bin';
+            final path = '$projectRoot/.generated/e2e-upload-${DateTime.now().millisecondsSinceEpoch}.bin';
             File(path).writeAsBytesSync(file);
             result['done'] = true;
             result['path'] = path;

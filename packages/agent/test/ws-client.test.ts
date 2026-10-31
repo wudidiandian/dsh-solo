@@ -31,10 +31,11 @@ afterEach(async () => {
 })
 
 function startMockRelay(opts?: {
+  autoPong?: boolean
   rejectHello?: boolean
   onEnvelope?: (env: Envelope, conn: WSType) => void
 }): MockRelay {
-  wss = new WebSocketServer({ port: 0 })
+  wss = new WebSocketServer({ port: 0, autoPong: opts?.autoPong ?? true })
   const serverConns: WSType[] = []
   const received: Envelope[] = []
 
@@ -206,4 +207,43 @@ describe('SoloRelayClient', () => {
     const client = new SoloRelayClient({ url: 'ws://127.0.0.1:1', deviceToken: 't' })
     expect(client.currentState).toBe('idle')
   })
+})
+
+
+it('keeps an idle healthy connection when ping interval exceeds pong timeout', async () => {
+  const relay = startMockRelay()
+  const url = await listenMock(relay)
+  const client = new SoloRelayClient({ url, deviceToken: 'test', heartbeatIntervalMs: 60, heartbeatTimeoutMs: 30, backoffBaseMs: 5 })
+  const connected = vi.fn()
+  client.on('connected', connected)
+  client.start()
+  try {
+    await waitFor(() => client.isConnected())
+    await sleep(250)
+    expect(client.isConnected()).toBe(true)
+    expect(connected).toHaveBeenCalledTimes(1)
+    expect(relay.serverConns).toHaveLength(1)
+  } finally { client.stop() }
+})
+
+it('does not reconnect or queue messages after explicit disposal', async () => {
+  const client = new SoloRelayClient({ url: 'ws://127.0.0.1:1/ws', deviceToken: 'test' })
+  client.send(makeEnvelope('agent.snapshot', {}))
+  client.stop()
+  client.reconnectWithToken('replacement')
+  client.send(makeEnvelope('agent.snapshot', {}))
+  expect(client.currentState).toBe('stopped')
+  expect(client.pendingCount).toBe(0)
+})
+
+it('reconnects when the server does not answer heartbeat pings', async () => {
+  const relay = startMockRelay({ autoPong: false })
+  const url = await listenMock(relay)
+  const client = new SoloRelayClient({ url, deviceToken: 'test', heartbeatIntervalMs: 40, heartbeatTimeoutMs: 20, backoffBaseMs: 5 })
+  client.on('error', () => {})
+  client.start()
+  try {
+    await waitFor(() => client.isConnected())
+    await waitFor(() => relay.serverConns.length >= 2)
+  } finally { client.stop() }
 })

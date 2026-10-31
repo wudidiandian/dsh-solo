@@ -1,21 +1,43 @@
 name: Release packages
 on:
-  push:
-    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '已提交的版本号，例如 0.1.5；留空读取 package.json'
+        required: false
+        type: string
 permissions:
   contents: read
+concurrency:
+  group: release-packages
+  cancel-in-progress: false
 jobs:
   packages:
     runs-on: ubuntu-latest
     environment: release
     permissions:
       contents: write
+    env:
+      RELEASE_REPOSITORY: ${{ github.repository }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
           cache: npm
+      - name: Check versions and required release configuration
+        id: release
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+          DISTRIBUTION_CONFIG: ${{ secrets.DISTRIBUTION_CONFIG }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: node scripts/prepare-release.mjs
       - uses: actions/setup-go@v5
         with:
           go-version-file: server/go.mod
@@ -29,29 +51,30 @@ jobs:
           flutter-version: '3.47.7'
           channel: stable
           cache: true
-      - name: Load private release configuration and signing key
+      - name: Load private build configuration and Android signing key
         env:
           DISTRIBUTION_CONFIG: ${{ secrets.DISTRIBUTION_CONFIG }}
           KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
           node --input-type=module <<'JS'
           import { writeFileSync } from 'node:fs';
-          if (!process.env.DISTRIBUTION_CONFIG || !process.env.KEYSTORE_BASE64) throw new Error('Release secrets are required');
-          JSON.parse(process.env.DISTRIBUTION_CONFIG);
-          writeFileSync('config/distribution.local.json', process.env.DISTRIBUTION_CONFIG);
-          writeFileSync(process.env.RUNNER_TEMP + '/release.jks', Buffer.from(process.env.KEYSTORE_BASE64, 'base64'));
+          const encoded = process.env.KEYSTORE_BASE64.replace(/\s/g, '');
+          const key = Buffer.from(encoded, 'base64');
+          if (key.length < 32 || key.toString('base64') !== encoded) throw new Error('Invalid Android signing key encoding');
+          writeFileSync('config/distribution.local.json', process.env.DISTRIBUTION_CONFIG, { mode: 0o600 });
+          writeFileSync(process.env.RUNNER_TEMP + '/release.jks', key, { mode: 0o600 });
           JS
       - run: npm ci
+      - run: npm run test:release
       - run: npm run build
       - run: npm test
       - run: npm run test:go
-      - run: npm run bundle --workspace=dsh-solo-agent
-      - name: Package plugin
+      - name: Package and verify desktop plugin
         run: |
-          mkdir release
+          mkdir -p release
           npm pack --workspace=dsh-solo-agent --pack-destination release
-          cp packages/agent/dist/dsh-solo-agent.bundle.js release/
-      - name: Build Android
+          node scripts/verify-plugin-package.mjs release
+      - name: Build signed Android release APK
         working-directory: app
         env:
           ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/release.jks
@@ -62,12 +85,20 @@ jobs:
           flutter pub get
           flutter test
           flutter build apk --release --dart-define-from-file=../.generated/flutter-defines.json
-      - name: Collect packages and checksums
-        run: |
-          cp app/build/app/outputs/flutter-apk/app-release.apk release/dsh-solo.apk
-          cd release
-          sha256sum *.apk *.tgz *.js > SHA256SUMS
-      - name: Create draft GitHub Release
+          cp build/app/outputs/flutter-apk/app-release.apk ../release/dsh-solo.apk
+      - name: Save built packages for troubleshooting
+        uses: actions/upload-artifact@v4
+        with:
+          name: dsh-solo-${{ steps.release.outputs.version }}
+          path: release/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Create matching tag and publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" release/* --draft --verify-tag --generate-notes
+        run: node scripts/publish-release.mjs
+      - name: Release links
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          printf '## Release\n\nhttps://github.com/%s/releases/tag/%s\n\nAndroid APK: https://github.com/%s/releases/latest/download/dsh-solo.apk\n' "$RELEASE_REPOSITORY" "$RELEASE_TAG" "$RELEASE_REPOSITORY" >> "$GITHUB_STEP_SUMMARY"

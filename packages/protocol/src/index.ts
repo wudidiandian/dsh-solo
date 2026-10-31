@@ -120,6 +120,7 @@ export interface SyncCatchupPayload {
 // ---------------------------------------------------------------------------
 
 export type CommandAction =
+  | 'project.list'
   | 'session.prompt'
   | 'approval.respond'
   | 'fs.list_dir'
@@ -147,7 +148,14 @@ export interface PromptAttachment {
   mime?: string
 }
 
+export interface ProjectEntry {
+  id: string
+  title: string
+}
+
 export interface SessionPromptData {
+  /** Existing desktop workspace selected for a new session. */
+  projectId?: string
   /** 缺省则新建会话 */
   sessionId?: string
   cwd?: string

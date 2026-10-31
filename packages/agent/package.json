@@ -1,9 +1,9 @@
 {
   "name": "dsh-solo-agent",
-  "version": "0.1.0",
+  "version": "0.1.4",
   "description": "DSH-SOLO 电脑端插件：Cordis 插件，注入 DeepSeek Harness 上下文并向 relay 维持长连接（手机远程掌控电脑 Agent）",
   "type": "module",
-  "main": "dist/index.js",
+  "main": "dist/dsh-solo-agent.bundle.js",
   "types": "dist/index.d.ts",
   "license": "MIT",
   "repository": {
@@ -19,28 +19,46 @@
     "remote-control",
     "mobile",
     "approval",
-    "cross-device"
+    "cross-device",
+    "dsh-plugin",
+    "deepseek-harness"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=18",
+    "dsh": ">=0.2.1-rc.5 <0.3.0"
   },
   "files": [
-    "dist"
+    "dist/dsh-solo-agent.bundle.js",
+    "dist/**/*.d.ts",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "LICENSE",
+    "dist/client.js"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "bundle": "node ../../scripts/configure.mjs && tsc -p tsconfig.json && node scripts/bundle.mjs",
-    "prepublishOnly": "npm run build && npm run bundle",
     "test": "vitest run",
     "prebuild": "node ../../scripts/configure.mjs",
-    "pretest": "node ../../scripts/configure.mjs"
+    "pretest": "node ../../scripts/configure.mjs",
+    "prepack": "npm run bundle"
   },
   "dsh": {
-    "id": "dsh-solo",
-    "displayName": "DSH-SOLO",
-    "entry": "dist/dsh-solo-agent.bundle.js",
-    "engines": {
-      "dsh": ">=0.2.0"
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-connection"
+      ]
     }
   },
   "devDependencies": {
@@ -52,6 +70,25 @@
     "qrcode": "^1.5.4",
     "typescript": "^5.6.0",
     "vitest": "^2.1.9",
-    "ws": "^8.18.0"
-  }
+    "ws": "^8.18.0",
+    "esbuild": "^0.21.5"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/dsh-solo-agent.bundle.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json",
+    "./client": "./dist/client.js"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "latest",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "author": "wudidiandian",
+  "homepage": "https://github.com/wudidiandian/dsh-solo"
 }

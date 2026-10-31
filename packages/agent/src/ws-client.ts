@@ -19,7 +19,7 @@ export interface SoloRelayClientOptions {
   agentInfo?: string
   /** 心跳间隔（默认 30s） */
   heartbeatIntervalMs?: number
-  /** 无任何收发数据超过该时长则判定死链（默认 10s，需小于服务端 PongWait） */
+  /** 发出 ping 后等待 pong 的最长时间（默认 10s） */
   heartbeatTimeoutMs?: number
   /** 重连退避基数（默认 500ms，指数递增） */
   backoffBaseMs?: number
@@ -47,7 +47,8 @@ export class SoloRelayClient extends EventEmitter {
   private retry = 0
   private retryTimer: NodeJS.Timeout | null = null
   private heartbeatTimer: NodeJS.Timeout | null = null
-  private lastActivity = 0
+  private pongTimer: NodeJS.Timeout | null = null
+  private disposed = false
   private stopped = false
 
   constructor(options: SoloRelayClientOptions) {
@@ -70,24 +71,26 @@ export class SoloRelayClient extends EventEmitter {
 
   /** 开始运行并保持连接（幂等） */
   start(): void {
-    if (this.state === 'stopped') return
+    if (this.state === 'stopped' || this.state === 'connecting' || this.state === 'open') return
     this.stopped = false
     if (!this.ws && !this.retryTimer) this.connect()
   }
 
   /** 停止运行：不再重连，关闭现有连接（幂等） */
   stop(): void {
+    this.disposed = true
     this.stopped = true
     this.state = 'stopped'
     if (this.retryTimer) clearTimeout(this.retryTimer)
-    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
+    this.stopHeartbeat()
     this.retryTimer = null
-    this.heartbeatTimer = null
+    this.queue = []
     this.ws?.close()
   }
 
   /** 发送信封；未连接时进入离线队列 */
   send(env: Envelope): void {
+    if (this.disposed) return
     const raw = JSON.stringify(env)
     if (this.state === 'open' && this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(raw)
@@ -114,6 +117,7 @@ export class SoloRelayClient extends EventEmitter {
    * 因此只需更新 opts 后触发断开/重连，重连握手自然携带新 token。
    */
   reconnectWithToken(token: string): void {
+    if (this.disposed) return
     this.opts.deviceToken = token
     if (this.stopped) {
       // 此前 hello.error 标记为致命停止；换 token 后重新允许连接
@@ -148,6 +152,7 @@ export class SoloRelayClient extends EventEmitter {
       this.ws = ws
 
       ws.on('open', () => {
+        if (this.stopped || this.ws !== ws) { ws.close(); return }
         const hello = makeEnvelope<HelloAgentPayload>('hello.agent', {
           deviceToken: this.opts.deviceToken,
           agentInfo: this.opts.agentInfo,
@@ -155,11 +160,13 @@ export class SoloRelayClient extends EventEmitter {
         ws.send(JSON.stringify(hello))
       })
       ws.on('message', (data, isBinary) => {
-        if (isBinary) return
+        if (isBinary || this.stopped || this.ws !== ws) return
         this.onMessage(data.toString())
       })
       ws.on('pong', () => {
-        this.lastActivity = Date.now()
+        if (this.ws !== ws) return
+        if (this.pongTimer) clearTimeout(this.pongTimer)
+        this.pongTimer = null
       })
       ws.on('error', (err) => {
         this.emit('error', err)
@@ -171,7 +178,7 @@ export class SoloRelayClient extends EventEmitter {
         }
       })
       ws.on('close', () => {
-        this.onDisconnect('connection closed')
+        if (this.ws === ws) this.onDisconnect('connection closed')
       })
     })
   }
@@ -218,7 +225,7 @@ export class SoloRelayClient extends EventEmitter {
   }
 
   private onMessage(raw: string): void {
-    this.lastActivity = Date.now()
+    if (this.stopped) return
     let env: Envelope
     try {
       env = JSON.parse(raw) as Envelope
@@ -253,22 +260,21 @@ export class SoloRelayClient extends EventEmitter {
 
   private startHeartbeat(): void {
     this.stopHeartbeat()
-    this.lastActivity = Date.now()
     this.heartbeatTimer = setInterval(() => {
-      if (Date.now() - this.lastActivity > this.opts.heartbeatTimeoutMs) {
-        // 死链判定：主动断开触发 close → 重连
-        this.ws?.terminate()
-        return
-      }
-      this.ws?.ping()
+      if (this.pongTimer || this.ws?.readyState !== WebSocket.OPEN) return
+      // Start the deadline after sending a ping, not after the previous message.
+      // Otherwise the default 30s interval always exceeds the 10s idle threshold.
+      const ws = this.ws
+      this.pongTimer = setTimeout(() => ws.terminate(), this.opts.heartbeatTimeoutMs)
+      ws.ping()
     }, this.opts.heartbeatIntervalMs)
   }
 
   private stopHeartbeat(): void {
-    if (this.heartbeatTimer) {
-      clearInterval(this.heartbeatTimer)
-      this.heartbeatTimer = null
-    }
+    if (this.heartbeatTimer) clearInterval(this.heartbeatTimer)
+    if (this.pongTimer) clearTimeout(this.pongTimer)
+    this.heartbeatTimer = null
+    this.pongTimer = null
   }
 
   private onDisconnect(reason: string): void {

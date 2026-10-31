@@ -17,12 +17,12 @@ type Room struct {
 	hub    *Hub
 	pusher push.Adapter
 
-	mu       sync.Mutex
-	agent    *client
-	mobiles  map[*client]bool
-	snapshot *proto.Envelope           // 缓存最近一次 agent.snapshot 整包
-	buffers  map[string]*RingBuffer    // sessionId → 事件环形缓冲
-	waiters  map[string]*client        // reqId → 发起 cmd.dispatch 的 mobile
+	mu         sync.Mutex
+	agent      *client
+	mobiles    map[*client]bool
+	snapshot   *proto.Envelope        // 缓存最近一次 agent.snapshot 整包
+	buffers    map[string]*RingBuffer // sessionId → 事件环形缓冲
+	waiters    map[string]*client     // reqId → 发起 cmd.dispatch 的 mobile
 	emptySince time.Time              // 最近一次变为空房（无 agent 且无 mobile）的时刻；非空为零值
 }
 
@@ -182,6 +182,7 @@ func (r *Room) storeAndBroadcast(env *proto.Envelope, raw []byte) {
 		// 异步推送，失败仅记日志，不影响主链路
 		go func() {
 			if err := r.pusher.Push(notif); err != nil {
+				r.hub.telemetry.count(func(c *Counters) { c.PushErrors++ })
 				r.hub.cfg.Logger.Printf("[PUSH] failed: %v", err)
 			}
 		}()
@@ -363,15 +364,18 @@ func (r *Room) admitUpload(c *client, env *proto.Envelope, raw []byte) bool {
 			return true // 负数 = 关闭大小限制
 		}
 		if probe.Data.Size <= 0 || probe.Data.Size > maxUp {
+			r.hub.telemetry.count(func(c *Counters) { c.UploadRejected++ })
 			r.replyError(c, env, fmt.Sprintf("file size %d exceeds limit %d bytes", probe.Data.Size, maxUp))
 			r.hub.cfg.Logger.Printf("[GUARD] upload rejected: %q size=%d limit=%d (token=%s...)",
 				probe.Data.Name, probe.Data.Size, maxUp, maskToken(c.token))
 			return false
 		}
 	case "file.chunk":
+		r.hub.telemetry.count(func(v *Counters) { v.UploadBytesIn += uint64(len(raw)) })
 		if c.uploadLimiter != nil && !c.uploadLimiter.AllowN(int64(len(raw))) {
 			// 字节桶耗尽：直接断开。正常客户端按 ack 节奏发送不会触达；
 			// 被破解的客户端绕过 App 限速时在此被硬性拦截。
+			r.hub.telemetry.count(func(v *Counters) { v.UploadLimited++ })
 			c.close("upload bandwidth exceeded")
 			return false
 		}

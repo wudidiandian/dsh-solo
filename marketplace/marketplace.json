@@ -1,36 +1,39 @@
 {
-  "schema": "dsh-marketplace/v1",
-  "name": "DSH-SOLO Community Marketplace",
-  "description": "DSH-SOLO 插件的自建市场索引（GitHub Pages 托管）。宿主市场列表功能可用后，将本文件指向 Pages 地址即可。",
-  "homepage": "https://github.com/wudidiandian/dsh-solo",
-  "updatedAt": "2026-10-28",
+  "format": 1,
+  "title": {
+    "en": "DSH-SOLO",
+    "zh": "DSH-SOLO 插件"
+  },
+  "description": {
+    "en": "DSH-SOLO release index. Publish the npm version before hosting this index.",
+    "zh": "DSH-SOLO 发布索引。请先发布对应 npm 版本，再托管此索引。"
+  },
   "plugins": [
     {
-      "id": "dsh-solo",
-      "name": "DSH-SOLO",
-      "version": "0.1.0",
-      "description": "用手机远程掌控电脑上的 DeepSeek Harness：快照秒开、实时事件流、远程指令、模型选择、文件/照片传递、高危操作远程审批。Local-First：支持官方云通道或完全自建 relay（BYOS）。",
-      "longDescription": "DSH-SOLO 是一个跨端协同系统。在电脑端安装本插件后，手机 App 可以：秒开电脑会话快照；实时跟踪 Agent 事件流（text.delta 连续渲染）；远程发送 prompt 并选择模型；上传照片/文件、选择电脑工作区文件或在线文档链接作为上下文；对高危操作（文件删除、命令执行等）进行远程审批；断线后按 seqId 断点续传。三端（插件 / Go relay / Flutter App）全开源，relay 可自建（Docker Compose 一键部署），数据不过第三方。",
-      "entry": "packages/agent/dist/dsh-solo-agent.bundle.js",
-      "install": {
-        "type": "npm",
-        "npm": "dsh-solo-agent",
-        "type_git_fallback": "git",
-        "source": "https://github.com/wudidiandian/dsh-solo.git",
-        "buildScript": "npm install && npm run build && npm run bundle --prefix packages/agent"
+      "name": "dsh-solo-agent",
+      "title": "DSH-SOLO",
+      "description": {
+        "en": "Remote DeepSeek Harness from your phone.",
+        "zh": "在手机上远程使用 DeepSeek Harness。"
       },
-      "engines": {
-        "dsh": ">=0.2.0",
-        "node": ">=18"
+      "author": "wudidiandian",
+      "homepage": "https://github.com/wudidiandian/dsh-solo",
+      "repository": {
+        "url": "https://github.com/wudidiandian/dsh-solo",
+        "directory": "packages/agent"
       },
-      "screenshots": [
-        "docs/screenshots/app-sessions.png",
-        "docs/screenshots/app-approval.png",
-        "docs/screenshots/pairing.png"
-      ],
-      "repository": "https://github.com/wudidiandian/dsh-solo",
-      "license": "MIT",
-      "tags": ["mobile", "remote-control", "approval", "cross-device", "local-first"]
+      "versions": [
+        {
+          "version": "0.1.0",
+          "publishTimestamp": 1793376000,
+          "source": {
+            "type": "npm"
+          },
+          "engines": {
+            "dsh": ">=0.2.1-rc.3 <0.3.0"
+          }
+        }
+      ]
     }
   ]
 }

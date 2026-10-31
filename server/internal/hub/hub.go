@@ -16,6 +16,7 @@ import (
 	"log"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -37,8 +38,8 @@ const (
 	defaultMsgRate        = 80  // 单连接每秒消息数
 	defaultMsgBurst       = 160 // 单连接消息突发桶容量
 
-	defaultUploadRate = 1 << 20    // 单连接上传字节速率：1MB/s（令牌桶补充速率）
-	defaultUploadBurst = 4 << 20   // 上传字节突发桶容量：4MB（约一张压缩照片的瞬时额度）
+	defaultUploadRate    = 1 << 20  // 单连接上传字节速率：1MB/s（令牌桶补充速率）
+	defaultUploadBurst   = 4 << 20  // 上传字节突发桶容量：4MB（约一张压缩照片的瞬时额度）
 	defaultMaxUploadSize = 10 << 20 // 单文件大小上限：10MB
 )
 
@@ -60,8 +61,8 @@ type Config struct {
 	TrustProxy     bool // 从 X-Forwarded-For/X-Real-IP 解析真实 IP（仅在可信反代后开启）
 
 	// 文件上传防护（2026-10-28）：仅约束 file.offer / file.chunk，其余消息不受影响
-	UploadRate    int  // 单连接上传字节速率（字节/秒），负数 = 不限速
-	UploadBurst   int  // 上传字节突发桶容量（字节），负数 = 不限突发
+	UploadRate    int   // 单连接上传字节速率（字节/秒），负数 = 不限速
+	UploadBurst   int   // 上传字节突发桶容量（字节），负数 = 不限突发
 	MaxUploadSize int64 // 单文件大小上限（字节），负数 = 不限制
 }
 
@@ -109,15 +110,16 @@ func (c *Config) fillDefaults() {
 
 // Hub 管理所有配对房间
 type Hub struct {
-	cfg   Config
-	guard *guard
-	mu    sync.Mutex
-	rooms map[string]*Room
+	cfg       Config
+	guard     *guard
+	telemetry *telemetry
+	mu        sync.Mutex
+	rooms     map[string]*Room
 }
 
 func New(cfg Config) *Hub {
 	cfg.fillDefaults()
-	return &Hub{cfg: cfg, guard: newGuard(cfg.MaxGlobalConns, cfg.MaxConnPerIP), rooms: make(map[string]*Room)}
+	return &Hub{cfg: cfg, guard: newGuard(cfg.MaxGlobalConns, cfg.MaxConnPerIP), telemetry: newTelemetry(), rooms: make(map[string]*Room)}
 }
 
 // Room 按 token 取（或创建）配对房间。
@@ -160,20 +162,28 @@ var upgrader = websocket.Upgrader{
 func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	ip := clientIP(r, h.cfg.TrustProxy)
 	if !h.guard.admit(ip) {
+		h.telemetry.count(func(c *Counters) { c.ConnectionRejected++ })
 		h.cfg.Logger.Printf("[GUARD] connection rejected (ip=%s, global=%d, ipConns=%d)",
 			ip, h.guard.globalConns(), h.guard.ipConns(ip))
 		w.WriteHeader(http.StatusTooManyRequests)
 		return
 	}
-	defer h.guard.release(ip)
+	handedOff := false
+	defer func() {
+		if !handedOff {
+			h.guard.release(ip)
+		}
+	}()
 
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		h.telemetry.count(func(c *Counters) { c.UpgradeErrors++ })
 		return
 	}
 
 	env, _, err := h.readHello(conn)
 	if err != nil {
+		h.telemetry.count(func(c *Counters) { c.HandshakeErrors++ })
 		h.closeConn(conn)
 		return
 	}
@@ -211,10 +221,12 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	okEnv := proto.Envelope{Type: proto.TypeHelloOK, Payload: mustJSON(proto.HelloOKPayload{Role: role})}
 	okRaw, _ := proto.Encode(&okEnv)
 	if err := writeMessage(conn, okRaw, h.cfg.WriteWait); err != nil {
+		h.telemetry.count(func(c *Counters) { c.WriteErrors++ })
 		h.closeConn(conn)
 		return
 	}
 
+	h.telemetry.sent(len(okRaw))
 	c := &client{
 		conn:    conn,
 		send:    make(chan []byte, h.cfg.SendBuf),
@@ -227,6 +239,8 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		uploadLimiter: newRateLimiter(h.cfg.UploadRate, h.cfg.UploadBurst),
 	}
 
+	handedOff = true
+	h.telemetry.add(c)
 	room := h.Room(token)
 	if role == proto.RoleAgent {
 		room.registerAgent(c)
@@ -287,6 +301,7 @@ func (h *Hub) readHello(conn *websocket.Conn) (*proto.Envelope, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
+	h.telemetry.received(len(raw))
 	env, err := proto.Decode(raw)
 	if err != nil {
 		return nil, nil, err
@@ -295,9 +310,14 @@ func (h *Hub) readHello(conn *websocket.Conn) (*proto.Envelope, []byte, error) {
 }
 
 func (h *Hub) reject(conn *websocket.Conn, reason string) {
+	h.telemetry.count(func(c *Counters) { c.HandshakeErrors++ })
 	env := proto.Envelope{Type: proto.TypeHelloError, Payload: mustJSON(proto.HelloErrorPayload{Reason: reason})}
 	if raw, err := proto.Encode(&env); err == nil {
-		_ = writeMessage(conn, raw, h.cfg.WriteWait)
+		if err := writeMessage(conn, raw, h.cfg.WriteWait); err == nil {
+			h.telemetry.sent(len(raw))
+		} else {
+			h.telemetry.count(func(c *Counters) { c.WriteErrors++ })
+		}
 	}
 	h.cfg.Logger.Printf("[WS] handshake rejected: %s", reason)
 	h.closeConn(conn)
@@ -313,12 +333,15 @@ func (h *Hub) closeConn(conn *websocket.Conn) {
 // ---------------------------------------------------------------------------
 
 type client struct {
-	conn  *websocket.Conn
-	send  chan []byte
-	hub   *Hub
-	role  string
-	token string
-	ip    string
+	conn         *websocket.Conn
+	send         chan []byte
+	hub          *Hub
+	role         string
+	token        string
+	ip           string
+	monitorID    uint64
+	connectedAt  time.Time
+	lastActivity atomic.Int64
 
 	limiter *rateLimiter // 单连接消息限流（nil = 不限流）
 
@@ -356,6 +379,11 @@ func (c *client) close(reason string) {
 	c.closed = true
 	close(c.send)
 	c.mu.Unlock()
+	if reason == "slow consumer" {
+		c.hub.telemetry.count(func(v *Counters) { v.SlowConsumers++ })
+	}
+	c.hub.telemetry.remove(c)
+	c.hub.guard.release(c.ip)
 	c.hub.cfg.Logger.Printf("[WS] %s disconnected (token=%s...): %s", c.role, maskToken(c.token), reason)
 	_ = c.conn.Close()
 }
@@ -374,22 +402,33 @@ func (c *client) readPump() {
 	pongWait := c.hub.cfg.PongWait
 	_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	c.conn.SetPongHandler(func(string) error {
+		c.lastActivity.Store(time.Now().UnixMilli())
 		return c.conn.SetReadDeadline(time.Now().Add(pongWait))
 	})
 	for {
 		_, raw, err := c.conn.ReadMessage()
 		if err != nil {
+			c.mu.Lock()
+			closed := c.closed
+			c.mu.Unlock()
+			if !closed && !websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+				c.hub.telemetry.count(func(v *Counters) { v.ReadErrors++ })
+			}
 			return
 		}
+		c.lastActivity.Store(time.Now().UnixMilli())
+		c.hub.telemetry.received(len(raw))
 		// 任意有效报文都视作存活信号
 		_ = c.conn.SetReadDeadline(time.Now().Add(pongWait))
 		// 消息限流：超速直接断开（防单连接消息洪水拖垮广播路径）
 		if c.limiter != nil && !c.limiter.Allow() {
+			c.hub.telemetry.count(func(v *Counters) { v.MessageLimited++ })
 			c.close("rate limited")
 			return
 		}
 		env, err := proto.Decode(raw)
 		if err != nil {
+			c.hub.telemetry.count(func(v *Counters) { v.InvalidMessages++ })
 			c.hub.cfg.Logger.Printf("[WS] bad envelope from %s: %v", c.role, err)
 			continue
 		}
@@ -420,8 +459,10 @@ func (c *client) writePump() {
 				return
 			}
 			if err := writeFrame(c.conn, data); err != nil {
+				c.hub.telemetry.count(func(v *Counters) { v.WriteErrors++ })
 				return
 			}
+			c.hub.telemetry.sent(len(data))
 		case <-ticker.C:
 			if err := c.conn.SetWriteDeadline(time.Now().Add(c.hub.cfg.WriteWait)); err != nil {
 				return

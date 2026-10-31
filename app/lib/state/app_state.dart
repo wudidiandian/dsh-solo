@@ -4,6 +4,7 @@
 /// - agent.snapshot → 模型列表 + 会话列表 + 目录树（秒开数据源）
 /// - session.event  → 按 seqId 去重后追加进对应会话的事件流
 /// - sync.catchup   → 断线补发的事件（gap 时提示以最新快照为准）
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -49,6 +50,12 @@ class SessionEntry {
   }
 
   String get displayTitle => (title == null || title!.isEmpty) ? id : title!;
+}
+
+class ProjectEntry {
+  const ProjectEntry({required this.id, required this.title});
+  final String id;
+  final String title;
 }
 
 /// 待审批条目
@@ -141,6 +148,58 @@ class AppState extends ChangeNotifier {
   String? relayUrl;
   String? deviceToken;
 
+  bool agentOnline = false;
+  bool checkingDesktop = false;
+  String? desktopError;
+  Timer? _desktopTimer;
+  Future<void>? _desktopCheck;
+  int _connectionEpoch = 0;
+
+  /// A relay handshake alone does not prove that the paired desktop is online.
+  bool get isDesktopConnected => relayStatus == RelayStatus.open && agentOnline;
+
+  Future<void> _checkDesktop(RelayClient c) {
+    if (!identical(client, c) || !c.isOpen) return Future.value();
+    return _desktopCheck ??= _probeDesktop(c, _connectionEpoch);
+  }
+
+  Future<void> _probeDesktop(RelayClient c, int epoch) async {
+    checkingDesktop = true;
+    notifyListeners();
+    try {
+      // Supported by existing plugin versions; no relay/server upgrade required.
+      final response = await c.rpc('device.token.get', {}, timeout: const Duration(seconds: 5));
+      if (!identical(client, c) || epoch != _connectionEpoch || !c.isOpen) return;
+      final result = response.payloadMap['result'];
+      final verified = response.payloadMap['ok'] == true &&
+          result is Map && result['token'] == c.deviceToken;
+      final wasOnline = agentOnline;
+      agentOnline = verified;
+      desktopError = verified ? null : AppL10n.i.desktopUnavailable;
+      if (verified && !wasOnline) onReconnected();
+    } catch (_) {
+      if (!identical(client, c) || epoch != _connectionEpoch) return;
+      agentOnline = false;
+      desktopError = AppL10n.i.desktopUnavailable;
+    } finally {
+      if (identical(client, c) && epoch == _connectionEpoch) {
+        checkingDesktop = false;
+        _desktopCheck = null;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> _ensureDesktop(RelayClient c) async {
+    await c.ensureOpen();
+    if (!identical(client, c)) throw StateError(AppL10n.i.desktopUnavailable);
+    if (!isDesktopConnected) await _checkDesktop(c);
+    if (!identical(client, c) || !isDesktopConnected) {
+      throw StateError(AppL10n.i.desktopUnavailable);
+    }
+  }
+
+
   /// 快照数据
   List<Map<String, dynamic>> models = [];
   List<SessionEntry> sessions = [];
@@ -206,7 +265,7 @@ class AppState extends ChangeNotifier {
     final c = client;
     if (c == null) throw StateError('relay not connected');
     // 断线重连窗口内不直接报错：等待自动重连（最多 8s）再上传
-    await c.ensureOpen();
+    await _ensureDesktop(c);
     if (bytes.length > maxUploadBytes) {
       throw Exception(AppL10n.i.fileTooLarge(bytes.length / (1 << 20)));
     }
@@ -320,6 +379,12 @@ class AppState extends ChangeNotifier {
   /// 处理 relay 下行的业务报文
   void applyEnvelope(Envelope env) {
     switch (env.type) {
+      case MsgType.rpcResponse:
+        if (env.payloadMap['ok'] == false && env.payloadMap['error'] == 'agent offline') {
+          agentOnline = false;
+          desktopError = AppL10n.i.desktopUnavailable;
+        }
+        break;
       case MsgType.agentSnapshot:
         final p = env.payloadMap;
         models = ((p['models'] as List?) ?? [])
@@ -407,19 +472,71 @@ class AppState extends ChangeNotifier {
 
   /// 连接 relay：创建客户端并接管回调
   void connect(RelayClient newClient) {
-    client?.stop();
-    client = newClient;
+    final previous = client;
+    final changedDevice = relayUrl != null &&
+        (relayUrl != newClient.url || deviceToken != newClient.deviceToken);
+    client = newClient; // Invalidate old callbacks before stopping their socket.
+    previous?.stop();
+    _connectionEpoch++;
+    _desktopTimer?.cancel();
+    _desktopCheck = null;
+    agentOnline = false;
+    checkingDesktop = false;
+    desktopError = null;
+    relayStatus = RelayStatus.idle;
+    relayError = null;
+    if (changedDevice) {
+      models = [];
+      sessions = [];
+      dirTree = [];
+      selectedModelId = null;
+      _events.clear();
+      lastSeq.clear();
+      gapSessions.clear();
+      _busySessions.clear();
+      _streaming.clear();
+      approvals.clear();
+      pendingAttachments.clear();
+    }
     relayUrl = newClient.url;
     deviceToken = newClient.deviceToken;
     newClient.onStatus = (s, detail) {
+      if (!identical(client, newClient)) return;
       relayStatus = s;
       relayError = detail;
+      if (s != RelayStatus.open) {
+        _connectionEpoch++;
+        agentOnline = false;
+        desktopError = null;
+        checkingDesktop = false;
+        _desktopCheck = null;
+        _desktopTimer?.cancel();
+      }
       notifyListeners();
     };
-    newClient.onHandshakeOk = onReconnected;
-    newClient.onEnvelope = applyEnvelope;
+    newClient.onHandshakeOk = () {
+      if (!identical(client, newClient)) return;
+      unawaited(_checkDesktop(newClient));
+      _desktopTimer?.cancel();
+      _desktopTimer = Timer.periodic(const Duration(seconds: 10), (_) {
+        unawaited(_checkDesktop(newClient));
+      });
+    };
+    newClient.onEnvelope = (env) {
+      if (identical(client, newClient)) applyEnvelope(env);
+    };
     newClient.start();
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    final previous = client;
+    client = null;
+    _connectionEpoch++;
+    _desktopTimer?.cancel();
+    previous?.stop();
+    super.dispose();
   }
 
   /// 每次握手成功后，对所有已知会话按 lastSeqId 请求差量补发
@@ -432,10 +549,24 @@ class AppState extends ChangeNotifier {
   /// 发送 prompt（sessionId 为空则由 agent 新建会话；modelId 缺省用
   /// selectedModelId，再缺省由 agent 侧回落宿主默认模型）。
   /// 待发送附件（pendingAttachments）随消息携带，发送成功后清空。
-  Future<Envelope> sendPrompt(String text, {String? sessionId, String? modelId}) async {
+  Future<List<ProjectEntry>> listProjects() async {
+    final c = client;
+    if (c == null) throw StateError(AppL10n.i.desktopUnavailable);
+    await _ensureDesktop(c);
+    final response = await c.rpc('project.list', {});
+    if (response.payloadMap['ok'] != true) {
+      throw StateError(response.payloadMap['error']?.toString() ?? AppL10n.i.projectsLoadFailed);
+    }
+    final result = response.payloadMap['result'];
+    if (result is! List) throw StateError(AppL10n.i.projectsLoadFailed);
+    return result.whereType<Map>().where((p) => p['id'] is String && (p['id'] as String).isNotEmpty)
+        .map((p) => ProjectEntry(id: p['id'] as String, title: (p['title'] ?? p['id']).toString())).toList();
+  }
+
+  Future<Envelope> sendPrompt(String text, {String? sessionId, String? modelId, String? projectId}) async {
     final c = client;
     if (c == null) throw StateError('relay not connected');
-    await c.ensureOpen();
+    await _ensureDesktop(c);
     if (pendingAttachments.any((a) => a.progress != null)) {
       throw StateError(AppL10n.i.attachmentStillUploading);
     }
@@ -443,6 +574,7 @@ class AppState extends ChangeNotifier {
     final atts = [for (final a in pendingAttachments) a.toJson()];
     return c.rpc(CmdAction.sessionPrompt, {
       if (sessionId != null) 'sessionId': sessionId,
+      if (projectId != null) 'projectId': projectId,
       if (mid != null && mid.isNotEmpty) 'modelId': mid,
       'prompt': text,
       if (atts.isNotEmpty) 'attachments': atts,
@@ -458,7 +590,7 @@ class AppState extends ChangeNotifier {
   Future<Envelope> fetchHistory(String sessionId, {int? sinceSeqId}) async {
     final c = client;
     if (c == null) throw StateError('relay not connected');
-    await c.ensureOpen();
+    await _ensureDesktop(c);
     return c.rpc(CmdAction.sessionHistory, {
       'sessionId': sessionId,
       if (sinceSeqId != null) 'sinceSeqId': sinceSeqId,
@@ -519,7 +651,7 @@ class AppState extends ChangeNotifier {
   Future<Envelope> respondApproval(ApprovalItem item, bool approved) async {
     final c = client;
     if (c == null) throw StateError('relay not connected');
-    await c.ensureOpen();
+    await _ensureDesktop(c);
     final resp = await c.rpc(
       CmdAction.approvalRespond,
       {'approvalId': item.approvalId, 'approved': approved},
@@ -534,7 +666,7 @@ class AppState extends ChangeNotifier {
   Future<Envelope> listDir(String path) async {
     final c = client;
     if (c == null) throw StateError('relay not connected');
-    await c.ensureOpen();
+    await _ensureDesktop(c);
     return c.rpc(CmdAction.fsListDir, {'path': path});
   }
 
@@ -542,7 +674,7 @@ class AppState extends ChangeNotifier {
   Future<Envelope> renameSession(String sessionId, String title) async {
     final c = client;
     if (c == null) throw StateError('relay not connected');
-    await c.ensureOpen();
+    await _ensureDesktop(c);
     final resp = await c.rpc(CmdAction.sessionRename, {
       'sessionId': sessionId,
       'title': title,
@@ -568,7 +700,7 @@ class AppState extends ChangeNotifier {
   Future<Envelope> deleteSession(String sessionId) async {
     final c = client;
     if (c == null) throw StateError('relay not connected');
-    await c.ensureOpen();
+    await _ensureDesktop(c);
     final resp = await c.rpc(CmdAction.sessionDelete, {'sessionId': sessionId});
     if (resp.payloadMap['ok'] == true) {
       sessions.removeWhere((s) => s.id == sessionId);

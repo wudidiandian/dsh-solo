@@ -19,7 +19,9 @@ jobs:
           go-version-file: server/go.mod
           cache-dependency-path: server/go.sum
       - run: npm ci
+      - run: npm run test:release
       - run: npm run build
+      - run: npm run pack:plugin
       - run: npm test
       - run: npm run test:go
   mobile:

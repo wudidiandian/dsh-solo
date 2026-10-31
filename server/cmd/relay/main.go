@@ -10,8 +10,10 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,11 +21,13 @@ import (
 	"time"
 
 	"dsh-solo/server/internal/hub"
+	"dsh-solo/server/internal/monitor"
 	"dsh-solo/server/internal/push"
 )
 
 func main() {
 	var (
+		adminAddr    = flag.String("admin-addr", os.Getenv("DSH_ADMIN_ADDR"), "独立监控监听地址；留空关闭，建议 127.0.0.1:8788")
 		addr         = flag.String("addr", ":8787", "HTTP 监听地址（Caddy 反代部署时建议 127.0.0.1:8787）")
 		tlsCert      = flag.String("tls-cert", "", "TLS 证书路径（留空则以纯 WS 运行，仅限本机开发）")
 		tlsKey       = flag.String("tls-key", "", "TLS 私钥路径")
@@ -69,6 +73,32 @@ func main() {
 		MaxUploadSize:  *maxUpload,
 	})
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var adminServer *http.Server
+	if *adminAddr != "" {
+		username := os.Getenv("DSH_ADMIN_USER")
+		if username == "" {
+			username = "admin"
+		}
+		console, err := monitor.New(h, username, os.Getenv("DSH_ADMIN_PASSWORD"))
+		if err != nil {
+			logger.Fatalf("monitor configuration: %v", err)
+		}
+		console.NodeName = os.Getenv("DSH_NODE_NAME")
+		listener, err := net.Listen("tcp", *adminAddr)
+		if err != nil {
+			logger.Fatalf("monitor listener: %v", err)
+		}
+		adminServer = &http.Server{Handler: console, ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 15 * time.Second, IdleTimeout: 60 * time.Second}
+		go console.Run(ctx)
+		go func() {
+			if err := adminServer.Serve(listener); err != nil && err != http.ErrServerClosed {
+				logger.Printf("monitor server stopped: %v", err)
+			}
+		}()
+		logger.Printf("monitor listening on %s (separate authenticated management listener)", listener.Addr())
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", h.HandleWS)
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -87,6 +117,10 @@ func main() {
 		signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
 		<-sig
 		logger.Printf("shutting down...")
+		cancel()
+		if adminServer != nil {
+			_ = adminServer.Close()
+		}
 		_ = srv.Close()
 	}()
 

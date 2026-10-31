@@ -3,8 +3,6 @@
 /// - sessionId 为 null 表示「新会话」：发送第一条 prompt 后按 agent 返回的
 ///   sessionId 切换到真实会话。
 /// - 事件按 kind 分桶渲染，连续的 text.delta 合并为一个气泡。
-import 'dart:io' show Platform;
-
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:image_picker/image_picker.dart';
@@ -27,6 +25,8 @@ class SessionPage extends StatefulWidget {
 
 class _SessionPageState extends State<SessionPage> {
   String? _activeSessionId;
+  ProjectEntry? _selectedProject;
+  bool _sending = false;
   final TextEditingController _inputCtrl = TextEditingController();
   final ScrollController _scrollCtrl = ScrollController();
 
@@ -45,6 +45,7 @@ class _SessionPageState extends State<SessionPage> {
     super.didUpdateWidget(oldWidget);
     if (widget.sessionId != oldWidget.sessionId) {
       _activeSessionId = widget.sessionId;
+      _selectedProject = null;
       _historyLoadedFor = null;
       _loadHistory();
     }
@@ -111,28 +112,37 @@ class _SessionPageState extends State<SessionPage> {
   /// 发送 prompt
   Future<void> _send() async {
     final text = _inputCtrl.text.trim();
-    if (text.isEmpty) return;
-    _inputCtrl.clear();
+    if (text.isEmpty || _sending) return;
+    setState(() => _sending = true);
     try {
-      final resp = await widget.state.sendPrompt(text, sessionId: _activeSessionId);
+      if (_activeSessionId == null && _selectedProject == null) {
+        if (!await _pickProject()) return;
+      }
+      if (!mounted) return;
+      final resp = await widget.state.sendPrompt(text, sessionId: _activeSessionId,
+          projectId: _activeSessionId == null ? _selectedProject?.id : null);
+      if (!mounted) return;
       final p = resp.payloadMap;
       final ok = p['ok'] == true;
       if (!ok) {
         _toast(AppL10n.i.sendFailed(p['error'] ?? AppL10n.i.unknownError));
         return;
       }
+      if (_inputCtrl.text.trim() == text) _inputCtrl.clear();
       final result = p['result'];
       final newSid = result is Map ? result['sessionId']?.toString() : null;
       if (newSid != null && newSid.isNotEmpty && newSid != _activeSessionId) {
         setState(() => _activeSessionId = newSid);
       }
     } catch (e) {
-      _toast(AppL10n.i.sendError(e));
+      if (mounted) _toast(AppL10n.i.sendError(e));
+    } finally {
+      if (mounted) setState(() => _sending = false);
     }
   }
 
   // -------------------------------------------------------------------------
-  // 附件交互（2026-10-28）：+ 菜单 → 拍照 / 相册 / 电脑文件 / 链接
+  // 附件交互（2026-10-28）：+ 菜单 → 拍照 / 相册 / 选择项目 / 链接
   // -------------------------------------------------------------------------
 
   /// "+" 菜单：附件来源选择。附件已满时仅允许查看/移除。
@@ -172,12 +182,12 @@ class _SessionPageState extends State<SessionPage> {
               onTap: () => Navigator.pop(ctx, 'gallery'),
             ),
             ListTile(
-              enabled: !full,
+              enabled: !_sending,
               dense: true,
               leading: const Icon(Icons.folder_open),
-              title: Text(AppL10n.i.pcFile),
-              subtitle: Text(AppL10n.i.pcFileSubtitle, style: const TextStyle(fontSize: 11)),
-              onTap: () => Navigator.pop(ctx, 'file'),
+              title: Text(AppL10n.i.selectProject),
+              subtitle: Text(AppL10n.i.selectProjectHint, style: const TextStyle(fontSize: 11)),
+              onTap: () => Navigator.pop(ctx, 'project'),
             ),
             ListTile(
               enabled: !full,
@@ -198,8 +208,8 @@ class _SessionPageState extends State<SessionPage> {
         await _pickImage(ImageSource.camera);
       case 'gallery':
         await _pickImage(ImageSource.gallery);
-      case 'file':
-        await _pickComputerFile();
+      case 'project':
+        await _pickProject();
       case 'link':
         await _addLinkDialog();
     }
@@ -225,22 +235,19 @@ class _SessionPageState extends State<SessionPage> {
     }
   }
 
-  /// 电脑文件：目录树选择器（复用快照 dirTree + fs.list_dir 懒展开）
-  Future<void> _pickComputerFile() async {
-    final picked = await showDialog<Map<String, String>>(
+  /// 选择已有桌面项目，首条消息发送时创建会话。
+  Future<bool> _pickProject() async {
+    final project = await showDialog<ProjectEntry>(
       context: context,
-      builder: (_) => _FilePickerDialog(state: widget.state),
+      builder: (_) => _ProjectPickerDialog(state: widget.state),
     );
-    if (picked == null) return;
-    try {
-      widget.state.addAttachment(PendingAttachment(
-        kind: 'file',
-        name: picked['name'] ?? picked['path']!.split(Platform.pathSeparator).last,
-        path: picked['path'],
-      ));
-    } catch (e) {
-      _toast('$e');
-    }
+    if (project == null || !mounted) return false;
+    setState(() {
+      _selectedProject = project;
+      _activeSessionId = null;
+      _historyLoadedFor = null;
+    });
+    return true;
   }
 
   /// 在线文档链接输入
@@ -349,6 +356,15 @@ class _SessionPageState extends State<SessionPage> {
           ),
           body: Column(
             children: [
+              if (!state.isDesktopConnected)
+                Material(
+                  color: Colors.amber.shade100,
+                  child: ListTile(
+                    dense: true,
+                    leading: const Icon(Icons.link_off),
+                    title: Text(AppL10n.i.desktopUnavailable),
+                  ),
+                ),
               if (state.gapSessions.contains(sid))
                 Material(
                   color: Colors.blueGrey.shade50,
@@ -387,6 +403,12 @@ class _SessionPageState extends State<SessionPage> {
                     mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      if (_selectedProject != null)
+                        TextButton.icon(
+                          onPressed: _sending ? null : _pickProject,
+                          icon: const Icon(Icons.folder_outlined, size: 18),
+                          label: Text(_selectedProject!.title),
+                        ),
                       _ModelPicker(state: state),
                       _AttachmentStrip(
                         state: state,
@@ -1017,131 +1039,55 @@ class _AttachmentStrip extends StatelessWidget {
   }
 }
 
-/// 电脑文件选择器：目录树浏览（快照 2 层 + fs.list_dir 懒展开），点文件返回。
-class _FilePickerDialog extends StatefulWidget {
-  const _FilePickerDialog({required this.state});
-
+/// 仅按需获取桌面工作区名称，不枚举项目文件。
+class _ProjectPickerDialog extends StatefulWidget {
+  const _ProjectPickerDialog({required this.state});
   final AppState state;
-
   @override
-  State<_FilePickerDialog> createState() => _FilePickerDialogState();
+  State<_ProjectPickerDialog> createState() => _ProjectPickerDialogState();
 }
 
-class _FilePickerDialogState extends State<_FilePickerDialog> {
-  final Set<String> _expanded = {};
-  final Map<String, List<DirNode>> _lazy = {};
-  final Set<String> _loading = {};
-
-  Future<void> _toggle(DirNode node) async {
-    final path = node.path;
-    if (_expanded.contains(path)) {
-      setState(() => _expanded.remove(path));
-      return;
-    }
-    setState(() => _expanded.add(path));
-    if (_lazy.containsKey(path)) return;
-    // 已有子节点（快照浅扫带出）直接用；否则走 listDir 懒加载
-    if (node.children.isNotEmpty) return;
-    setState(() => _loading.add(path));
-    try {
-      final resp = await widget.state.listDir(path);
-      final items = (resp.payloadMap['result'] as List?) ?? const [];
-      _lazy[path] = items.map(DirNode.from).whereType<DirNode>().toList();
-    } catch (_) {
-      _lazy[path] = const [];
-    } finally {
-      if (mounted) {
-        setState(() => _loading.remove(path));
-      }
-    }
+class _ProjectPickerDialogState extends State<_ProjectPickerDialog> {
+  late Future<List<ProjectEntry>> _future;
+  @override
+  void initState() {
+    super.initState();
+    _future = widget.state.listProjects();
   }
-
-  List<DirNode> _childrenOf(DirNode node) =>
-      _lazy[node.path] ?? node.children;
-
-  Widget _tile(DirNode node, int depth) {
-    final isDir = node.isDir;
-    final expanded = _expanded.contains(node.path);
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        ListTile(
-          dense: true,
-          visualDensity: VisualDensity.compact,
-          contentPadding: EdgeInsets.only(left: 12.0 + depth * 16, right: 8),
-          leading: Icon(
-            isDir
-                ? (expanded ? Icons.folder_open : Icons.folder)
-                : Icons.description_outlined,
-            size: 18,
-            color: isDir ? Colors.amber.shade700 : Colors.blueGrey,
-          ),
-          title: Text(node.name, style: const TextStyle(fontSize: 13), maxLines: 1, overflow: TextOverflow.ellipsis),
-          trailing: isDir
-              ? (_loading.contains(node.path)
-                  ? const SizedBox(
-                      width: 14, height: 14,
-                      child: CircularProgressIndicator(strokeWidth: 2))
-                  : Icon(expanded ? Icons.expand_less : Icons.expand_more, size: 18))
-              : const Icon(Icons.check_rounded, size: 16, color: Colors.transparent),
-          onTap: () {
-            if (isDir) {
-              _toggle(node);
-            } else {
-              Navigator.pop(context, {'name': node.name, 'path': node.path});
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text(AppL10n.i.selectProject),
+    content: SizedBox(
+      width: 360,
+      height: 320,
+      child: Column(children: [
+        Text(AppL10n.i.selectProjectHint),
+        const SizedBox(height: 12),
+        Expanded(child: FutureBuilder<List<ProjectEntry>>(
+          future: _future,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const Center(child: CircularProgressIndicator());
             }
+            if (snapshot.hasError) { return Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Text(AppL10n.i.projectsLoadFailed),
+              TextButton(onPressed: () => setState(() { _future = widget.state.listProjects(); }),
+                child: const Icon(Icons.refresh)),
+            ]); }
+            final projects = snapshot.data ?? [];
+            if (projects.isEmpty) return Center(child: Text(AppL10n.i.noProjects));
+            return ListView(children: [for (final project in projects)
+              ListTile(leading: const Icon(Icons.folder_outlined), title: Text(project.title),
+                onTap: () => Navigator.pop(context, project)),
+            ]);
           },
-        ),
-        if (isDir && expanded)
-          for (final child in _childrenOf(node)) _tile(child, depth + 1),
-      ],
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final tree = widget.state.dirTree;
-    return Dialog(
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxHeight: 480, maxWidth: 400),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-              child: Row(
-                children: [
-                  Text(AppL10n.i.pickPcFile,
-                      style: Theme.of(context)
-                          .textTheme
-                          .titleSmall
-                          ?.copyWith(fontWeight: FontWeight.bold)),
-                  const Spacer(),
-                  IconButton(
-                    icon: const Icon(Icons.close, size: 18),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                ],
-              ),
-            ),
-            const Divider(height: 1),
-            Flexible(
-              child: tree.isEmpty
-                  ? Padding(
-                      padding: const EdgeInsets.all(24),
-                      child: Text(AppL10n.i.noDirTreeHint,
-                          style: const TextStyle(color: Colors.grey, fontSize: 13)),
-                    )
-                  : ListView(shrinkWrap: true, children: [for (final n in tree) _tile(n, 0)]),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
+        )),
+      ]),
+    ),
+    actions: [TextButton(onPressed: () => Navigator.pop(context), child: Text(AppL10n.i.cancel))],
+  );
 }
 
-/// 变更文件列表页（Diff 查看器）：按文件浏览 Agent 的写入/编辑
 class _ChangesPage extends StatelessWidget {
   const _ChangesPage({required this.entries});
 

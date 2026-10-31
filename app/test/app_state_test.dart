@@ -91,6 +91,8 @@ void main() {
           conn.onEnvelope = (env) {
             if (env.type == MsgType.helloMobile) {
               conn.send(makeEnvelope(MsgType.helloOk, {'role': 'mobile'}));
+            } else if (env.type == MsgType.cmdDispatch && env.payloadMap['action'] == 'device.token.get') {
+              conn.send(makeEnvelope(MsgType.rpcResponse, {'ok': true, 'result': {'token': 't'}}, {'reqId': env.reqId}));
             }
           };
         },
@@ -101,7 +103,7 @@ void main() {
       state.applyEnvelope(event('s1', 5, {'kind': 'text.delta', 'text': 'a'}));
 
       state.connect(RelayClient(url: relay.url, deviceToken: 't'));
-      await waitFor(() => state.relayStatus == RelayStatus.open);
+      await waitFor(() => state.isDesktopConnected);
 
       // 模拟断线重连后的自动续传
       state.onReconnected();

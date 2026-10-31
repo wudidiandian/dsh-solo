@@ -484,3 +484,100 @@ describe('AgentCore', () => {
     }
   })
 })
+
+
+describe('snapshot and shutdown regressions', () => {
+  it('keeps the last snapshot on read failure, but publishes a genuine empty list', async () => {
+    const relay = new MockRelay()
+    const { services } = makeServices()
+    const list = vi.spyOn(services, 'listSessions')
+      .mockResolvedValueOnce([{ id: 'existing' }])
+      .mockRejectedValueOnce(new Error('inactive context'))
+      .mockResolvedValueOnce([])
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {})
+    const core = new AgentCore(relay, { services })
+    try {
+      await core.publishSnapshot()
+      await core.publishSnapshot()
+      expect(relay.ofType('agent.snapshot')).toHaveLength(1)
+      expect(relay.ofType('agent.snapshot')[0].payload).toMatchObject({ sessions: [{ id: 'existing' }] })
+      await core.publishSnapshot()
+      expect(relay.ofType('agent.snapshot')).toHaveLength(2)
+      expect(relay.ofType('agent.snapshot')[1].payload).toMatchObject({ sessions: [] })
+    } finally { core.stop(); list.mockRestore(); log.mockRestore() }
+  })
+
+  it('discards an older snapshot that finishes after a newer one', async () => {
+    const relay = new MockRelay()
+    const { services } = makeServices()
+    let finish!: (sessions: unknown[]) => void
+    services.listSessions = vi.fn()
+      .mockImplementationOnce(() => new Promise(resolve => { finish = resolve }))
+      .mockResolvedValueOnce([{ id: 'new' }])
+    const core = new AgentCore(relay, { services })
+    const old = core.publishSnapshot()
+    await core.publishSnapshot()
+    finish([{ id: 'old' }])
+    await old
+    expect(relay.ofType('agent.snapshot')).toHaveLength(1)
+    expect(relay.ofType('agent.snapshot')[0].payload).toMatchObject({ sessions: [{ id: 'new' }] })
+    core.stop()
+  })
+
+  it('does not publish pending snapshots or handle commands after stop', async () => {
+    const relay = new MockRelay()
+    const { services } = makeServices()
+    let finish!: (sessions: unknown[]) => void
+    services.listSessions = () => new Promise(resolve => { finish = resolve })
+    const create = vi.spyOn(services, 'createSession')
+    const core = new AgentCore(relay, { services })
+    core.start()
+    const pending = core.publishSnapshot()
+    core.stop()
+    finish([])
+    await pending
+    relay.emit('connected')
+    relay.emit('command', makeEnvelope('cmd.dispatch', { action: 'session.prompt', data: { prompt: 'test' } }, { reqId: 'late' }))
+    await Promise.resolve()
+    expect(create).not.toHaveBeenCalled()
+    expect(relay.sent).toHaveLength(0)
+  })
+
+  it('does not submit a pending prompt after its owning context is stopped', async () => {
+    const relay = new MockRelay()
+    const { services } = makeServices()
+    let finish!: (session: AgentSessionLike) => void
+    services.getSession = () => new Promise(resolve => { finish = resolve })
+    const submitPrompt = vi.fn()
+    const core = new AgentCore(relay, { services })
+    core.start()
+    relay.emit('command', makeEnvelope('cmd.dispatch', { action: 'session.prompt', data: { sessionId: 's1', prompt: 'test' } }, { reqId: 'pending' }))
+    core.stop()
+    finish({ id: 's1', submitPrompt, setModel: vi.fn() })
+    await Promise.resolve()
+    expect(submitPrompt).not.toHaveBeenCalled()
+    expect(relay.sent).toHaveLength(0)
+  })
+})
+
+
+it('routes project selection to new sessions and refuses moving an existing session', async () => {
+  const relay = new MockRelay()
+  const { services } = makeServices()
+  services.listProjects = async () => [{ id: 'demo', title: 'Demo' }]
+  const create = vi.spyOn(services, 'createSession')
+  const core = new AgentCore(relay, { services })
+  core.start()
+  try {
+    relay.emit('command', makeEnvelope('cmd.dispatch', { action: 'project.list', data: {} }, { reqId: 'list' }))
+    await vi.waitFor(() => expect(relay.lastCommandResponse()?.reqId).toBe('list'))
+    expect(relay.lastCommandResponse()?.payload).toMatchObject({ ok: true, result: [{ id: 'demo', title: 'Demo' }] })
+    relay.emit('command', makeEnvelope('cmd.dispatch', { action: 'session.prompt', data: { projectId: 'demo', prompt: 'hello' } }, { reqId: 'new' }))
+    await vi.waitFor(() => expect(relay.lastCommandResponse()?.reqId).toBe('new'))
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({ projectId: 'demo' }))
+    relay.emit('command', makeEnvelope('cmd.dispatch', { action: 'session.prompt', data: { projectId: 'demo', sessionId: 'existing', prompt: 'hello' } }, { reqId: 'move' }))
+    await vi.waitFor(() => expect(relay.lastCommandResponse()?.reqId).toBe('move'))
+    expect(relay.lastCommandResponse()?.payload).toMatchObject({ ok: false })
+    expect(create).toHaveBeenCalledTimes(1)
+  } finally { core.stop() }
+})

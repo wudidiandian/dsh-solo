@@ -34,6 +34,7 @@ class RelayClient {
   Timer? _retry;
   int _attempt = 0;
   bool _started = false;
+  int _generation = 0;
   final Map<String, Completer<Envelope>> _rpcWaiters = {};
   final List<Completer<void>> _openWaiters = [];
 
@@ -81,6 +82,7 @@ class RelayClient {
 
   /// 停止连接并取消自动重连
   void stop() {
+    _generation++;
     _started = false;
     _retry?.cancel();
     _sub?.cancel();
@@ -136,6 +138,7 @@ class RelayClient {
 
   Future<void> _connect() async {
     if (!_started) return;
+    final generation = ++_generation;
     _setStatus(RelayStatus.connecting, null);
     WebSocketChannel ch;
     try {
@@ -147,10 +150,10 @@ class RelayClient {
     try {
       await ch.ready;
     } catch (e) {
-      _scheduleRetry('connect failed: $e');
+      if (_started && generation == _generation) _scheduleRetry('connect failed: $e');
       return;
     }
-    if (!_started) {
+    if (!_started || generation != _generation) {
       try {
         await ch.sink.close();
       } catch (_) {}
@@ -168,7 +171,14 @@ class RelayClient {
       'deviceToken': deviceToken,
       'deviceInfo': 'flutter-mobile',
     })));
-    _sub = ch.stream.listen(_onData, onDone: _onDone, onError: (Object e) => _onDone(), cancelOnError: true);
+    bool current() => _started && generation == _generation && identical(_channel, ch);
+    _sub = ch.stream.listen((raw) {
+      if (current()) _onData(raw);
+    }, onDone: () {
+      if (current()) _onDone();
+    }, onError: (Object e) {
+      if (current()) _onDone();
+    }, cancelOnError: true);
   }
 
   void _onData(dynamic raw) {

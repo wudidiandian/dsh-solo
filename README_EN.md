@@ -77,6 +77,10 @@ Click the preview to open the video. It demonstrates connecting the phone, selec
 
 <img src="docs/screenshots/app-session-desktop.png" alt="A phone-created session appears under the desktop demo project" width="900">
 
+Before sending the first task, select **+ → Select project** and choose a registered desktop project. The new session is created there; existing sessions stay in place. The project list requests names and IDs without scanning project files.
+
+The home screen gear opens **Device connection, Help, Privacy and permissions, and About DSH-SOLO**. View the installed version, open-source licenses and project links, or copy a connection report without tokens or chat content.
+
 ### Alternative: install a plugin archive
 
 For offline installation or a specific archive, download `dsh-solo-agent-<version>.tgz` from [Releases](https://github.com/wudidiandian/dsh-solo/releases).
@@ -137,19 +141,3 @@ Share feature requests and use cases through [Issues](https://github.com/wudidia
 ## License
 
 [MIT](LICENSE)
-
-
-### Create a session in a desktop project
-
-With plugin and App version `0.1.2` or newer, select **+ → Select project** and choose an available workspace registered on the desktop. The first message creates a session in that project. Existing sessions are kept. The picker requests project names and IDs on demand without scanning project files; the relay needs no update.
-
-
-### App settings
-
-The home screen gear opens Device connection, Help, Privacy and permissions, and About DSH-SOLO. Pairing still supports QR codes and manual tokens. Help can copy a limited connection report without tokens, server addresses or chat content. About shows the installed version and open-source licenses. These settings are available in App `0.1.3`; the plugin and server need no update.
-
-
-Stable version `0.1.4` includes embedded QR pairing over the authenticated owner-only Host connection. Desktop and browser clients render it directly. Same-computer users retain a browser backup link. No relay upgrade is needed.
-
-
-App `0.1.4` adds links to the [GitHub project](https://github.com/wudidiandian/dsh-solo) and author [wudidiandian](https://github.com/wudidiandian) under About.

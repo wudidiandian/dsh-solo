@@ -47,7 +47,7 @@
 
 安装包与版本 tag 发布到工作流所在的**当前源码仓库**：[wudidiandian/dsh-solo Releases](https://github.com/wudidiandian/dsh-solo/releases)。工作流使用 `github.repository` 确定目标，使用 GitHub 内置 `GITHUB_TOKEN`，并已为发布任务声明 `contents: write` 权限。无需额外创建发布令牌，也无需配置 `RELEASE_REPOSITORY` 变量；历史的同名变量不会影响当前工作流。
 
-2026-11-01 核查：运行仓库 `dsh-solo` 的 `release` Environment 已配置 `DISTRIBUTION_CONFIG`；正式签名的四项 Secrets 仍需维护者补齐。缺配置时工作流会在构建前失败并列出缺项。
+发布前应在 `release` Environment 配齐以上五项 Secrets。缺配置时工作流会在构建前失败并列出缺项。
 
 ### 每次发布
 

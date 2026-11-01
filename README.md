@@ -20,12 +20,33 @@ dsh-solo-agent
 
 省略版本号时安装 npm `latest` 标签对应的正式版；需要指定版本时可输入 `dsh-solo-agent@0.1.4`。如果提示找不到插件，请先将安装源切换到 **官方 npm 源**，国内镜像可能尚未同步。已安装的插件需要按宿主提示更新，或卸载后重新安装；通常可保留用户主目录 `.dsh-solo` 中的配对数据。
 
+<details>
+<summary>查看插件安装图解（点击展开）</summary>
+
+**① 添加插件，输入 `dsh-solo-agent`**
+
+<img src="docs/screenshots/install-plugin-1.png" alt="在 DeepSeek Harness 官方桌面版添加 dsh-solo-agent 插件" width="900">
+
+**② 安装成功后，点击「立即启用」**
+
+<img src="docs/screenshots/install-plugin-2.png" alt="插件安装成功，点击立即启用" width="900">
+
+**③ 确认插件开关已打开**
+
+<img src="docs/screenshots/install-plugin-3.png" alt="在已安装插件列表中启用 DSH-SOLO" width="900">
+
+**④ 组件显示「运行中」，打开左侧「手机配对」**
+
+<img src="docs/screenshots/install-plugin-4.png" alt="确认插件运行中并找到手机配对入口" width="900">
+
+</details>
+
 ### 2. 下载 Android App
 
 - **[下载最新版 Android APK](https://github.com/wudidiandian/dsh-solo/releases/latest/download/dsh-solo.apk)**
 - [查看全部 Releases、版本说明与插件安装包](https://github.com/wudidiandian/dsh-solo/releases)
 
-下载 `dsh-solo.apk` 后在 Android 手机上安装；插件与 App 的版本兼容性以发布说明为准。安装包在对应 Release 发布后可下载，首次发布前最新版链接尚不可用。安装包发布在本项目仓库的 Releases；仓库为私有时，访问和下载需要相应 GitHub 权限。
+下载 `dsh-solo.apk` 后在 Android 手机上安装；插件与 App 的版本兼容性以发布说明为准。安装包发布在本项目仓库的 Releases，可直接下载。
 
 ### 3. 扫码配对
 
@@ -34,6 +55,27 @@ dsh-solo-agent
 3. 不方便扫码时，在电脑配对页点击 **查看令牌**，再在 App 中手动填入；官方 App 已预置官方云转发地址。
 
 使用时电脑上的 DeepSeek Harness 和插件需要保持运行，电脑与手机均需联网。二维码包含设备配对凭证，请勿公开分享。Android 为当前交付目标；其他平台需要自行适配和验证。
+
+<details>
+<summary>查看电脑端手机配对页面（点击展开）</summary>
+
+<img src="docs/screenshots/phone-pairing.png" alt="在电脑端手机配对页显示二维码，用自己的手机 App 扫码连接" width="900">
+
+图中的二维码仅用于演示。请扫描自己电脑插件中的二维码；令牌重置后，旧二维码失效。
+
+</details>
+
+### 4. 使用演示
+
+[▶ 观看 App 完整操作视频（约 2 分 18 秒）](docs/videos/app-usage.mp4)
+
+点击下方预览图打开视频，演示手机连接、选择电脑项目、发送任务、调用工具列出文件、切换模型，以及重命名和删除会话。
+
+<a href="docs/videos/app-usage.mp4"><img src="docs/screenshots/app-usage-preview.jpg" alt="点击观看 DSH-SOLO 手机端使用演示" width="260"></a>
+
+**手机创建的会话会同步到电脑端所选项目：**
+
+<img src="docs/screenshots/app-session-desktop.png" alt="手机端发起的会话同步显示在 DeepSeek Harness 电脑端 demo 项目下" width="900">
 
 ### 其他方式：使用插件安装包
 

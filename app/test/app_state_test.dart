@@ -102,7 +102,7 @@ void main() {
       final state = AppState();
       state.applyEnvelope(event('s1', 5, {'kind': 'text.delta', 'text': 'a'}));
 
-      state.connect(RelayClient(url: relay.url, deviceToken: 't'));
+      state.connect(RelayClient(allowUnencryptedForTests: true, url: relay.url, deviceToken: 't'));
       await waitFor(() => state.isDesktopConnected);
 
       // 模拟断线重连后的自动续传

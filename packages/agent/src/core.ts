@@ -71,7 +71,7 @@ export interface AgentCoreOptions {
   /** 工作区白名单根目录（session.prompt 的 file 附件只允许引用这些目录内的文件） */
   workspaceRoots?: string[]
   /** Called after a token reset so the relay client reconnects with the new token */
-  rotateDeviceToken?: (newToken: string) => void
+  rotateDeviceToken?: (newToken: string) => void | Promise<void>
 }
 
 /** Max buffered events per session (memory buffer and history reply are capped alike) */
@@ -130,6 +130,23 @@ export class AgentCore {
   private snapshotRequest = 0
   /** 周期快照兜底定时器（start 创建，stop 清理） */
   private snapshotTimer: ReturnType<typeof setInterval> | null = null
+  private streamTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly streamPending = new Map<string, { text: string; reasoning: string }>()
+
+  private clearStreams(): void {
+    if (this.streamTimer) clearTimeout(this.streamTimer)
+    this.streamTimer = null
+    this.streamPending.clear()
+  }
+
+  private flushStream(sessionId: string): void {
+    const pending = this.streamPending.get(sessionId)
+    this.streamPending.delete(sessionId)
+    if (!pending || this.stopped || !this.client.isConnected?.()) return
+    for (const [kind, text] of [['reasoning-delta', pending.reasoning], ['text-delta', pending.text]] as const) {
+      if (text) this.client.send(makeEnvelope('session.stream', { kind, text }, { sessionId }))
+    }
+  }
   /** Per-session event buffer for history replay (capped at HISTORY_BUFFER_LIMIT) */
   private readonly historyBuffers = new Map<string, SessionEvent[]>()
   /** Per-session promise chain serializing jsonl appends (keeps on-disk order) */
@@ -191,6 +208,7 @@ export class AgentCore {
 
   stop(): void {
     this.stopped = true
+    this.clearStreams()
     this.generation++
     this.snapshotRequest++
     if (this.snapshotTimer) {
@@ -230,15 +248,11 @@ export class AgentCore {
   /** 重置设备令牌：重新生成、持久化、并触发 relay 客户端换 token 重连 */
   async resetDeviceToken(): Promise<string> {
     const token = generateToken()
-    this.currentToken = token
     if (this.opts.stateDir) {
-      try {
-        await writeTokenFile(this.opts.stateDir, token)
-      } catch (err) {
-        console.error('[dsh-solo-agent] persist device token failed:', err)
-      }
+      await writeTokenFile(this.opts.stateDir, token)
     }
-    this.opts.rotateDeviceToken?.(token)
+    this.currentToken = token
+    await this.opts.rotateDeviceToken?.(token)
     return token
   }
 
@@ -274,18 +288,35 @@ export class AgentCore {
 
   /**
    * 逐字流帧下发（2026-10-28）：宿主 agent/assistant-stream 的 text-delta /
-   * reasoning-delta 直通转发。瞬时帧——仅在已连接时发送（断线期间的 delta
+   * reasoning-delta 按 100ms 合并转发。瞬时帧——仅在已连接时发送（断线期间的 delta
    * 无意义，durable 的 assistant/message 会在回合结束时补全），不入离线队列。
    */
   sendStreamDelta(sessionId: string, kind: 'text-delta' | 'reasoning-delta' | 'end', text?: string): void {
     if (this.stopped || !this.client.isConnected?.()) return
-    this.client.send(
-      makeEnvelope('session.stream', { kind, text }, { sessionId }),
-    )
+    if (kind === 'end') {
+      this.flushStream(sessionId)
+      this.client.send(makeEnvelope('session.stream', { kind }, { sessionId }))
+      return
+    }
+    if (!text) return
+    const pending = this.streamPending.get(sessionId) ?? { text: '', reasoning: '' }
+    this.streamPending.set(sessionId, pending)
+    if (kind === 'text-delta') pending.text += text
+    else pending.reasoning += text
+    // Coalesce token-sized host events before encrypting: about 10 frames/s per
+    // active stream instead of hundreds. Bound accumulated plaintext as well.
+    if (pending.text.length + pending.reasoning.length >= 32_768) this.flushStream(sessionId)
+    if (!this.streamTimer) this.streamTimer = setTimeout(() => {
+      this.streamTimer = null
+      for (const sid of this.streamPending.keys()) this.flushStream(sid)
+    }, 100)
   }
 
   private forwardEvent(sessionId: string, event: SessionEvent): void {
     if (this.stopped) return
+    // Pending deltas must precede the durable message/turn completion, otherwise
+    // a late timer resurrects the typing cursor after the full reply arrived.
+    this.flushStream(sessionId)
     this.seq++
     const seqId = this.seq
     this.recordHistory(sessionId, event, seqId)
@@ -381,6 +412,7 @@ export class AgentCore {
    */
   private async loadHistory(sessionId: string, sinceSeqId?: number): Promise<SessionEvent[]> {
     if (typeof sinceSeqId === 'number') {
+      await this.historyWriteChains.get(sessionId)
       const disk = await this.readHistoryFile(sessionId)
       const source = disk ?? this.historyBuffers.get(sessionId) ?? []
       return source.filter((e) => {
@@ -438,7 +470,7 @@ export class AgentCore {
     if (!payload || typeof payload.action !== 'string') return
     const respond = (ok: boolean, result?: unknown, error?: string) => {
       if (env.reqId && isActive()) {
-        this.client.send(makeEnvelope('rpc.response', { ok, result, error }, { reqId: env.reqId }))
+        this.client.send(makeEnvelope('rpc.response', { ok, result, error }, { reqId: env.reqId, peerId: env.peerId }))
       }
     }
 
@@ -470,12 +502,14 @@ export class AgentCore {
           break
         }
         case 'file.offer': {
-          const data = payload.data as FileTransferOfferData
+          const original = payload.data as FileTransferOfferData
+          const data = { ...original, transferId: env.peerId ? `${env.peerId}:${original.transferId}` : original.transferId }
           respond(true, this.admitTransfer(data))
           break
         }
         case 'file.chunk': {
-          const data = payload.data as FileTransferChunkData
+          const original = payload.data as FileTransferChunkData
+          const data = { ...original, transferId: env.peerId ? `${env.peerId}:${original.transferId}` : original.transferId }
           const done = await this.receiveChunk(data)
           respond(true, done)
           break

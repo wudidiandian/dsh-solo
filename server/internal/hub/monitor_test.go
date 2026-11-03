@@ -25,7 +25,7 @@ func waitMonitor(t *testing.T, h *Hub, predicate func(MonitorSnapshot) bool) Mon
 	return MonitorSnapshot{}
 }
 func TestMonitorConnectionLifetimePrivacyAndTraffic(t *testing.T) {
-	h := New(Config{MaxGlobalConns: 2, MaxConnPerIP: 2, PongWait: 2 * time.Second})
+	h := New(Config{AllowLegacy: true, MaxGlobalConns: 2, MaxConnPerIP: 2, PongWait: 2 * time.Second})
 	address, stop := startServer(t, h)
 	defer stop()
 	token := "monitor-private-token-never-exported"
@@ -81,7 +81,7 @@ func TestMonitorConnectionLifetimePrivacyAndTraffic(t *testing.T) {
 	waitMonitor(t, h, func(s MonitorSnapshot) bool { return s.OnlineApps == 1 && s.ReservedConnections == 2 })
 }
 func TestMonitorInvalidFramesAndMaskedIPv6(t *testing.T) {
-	h := New(Config{})
+	h := New(Config{AllowLegacy: true})
 	address, stop := startServer(t, h)
 	defer stop()
 	conn := dial(t, address)
@@ -95,7 +95,7 @@ func TestMonitorInvalidFramesAndMaskedIPv6(t *testing.T) {
 	if maskedIP("2001:db8:1234:5678:abcd::1") != "2001:db8:1234::/48" {
 		t.Fatal("IPv6 mask incorrect")
 	}
-	if h.telemetry.roomID("fixture") == New(Config{}).telemetry.roomID("fixture") {
+	if h.telemetry.roomID("fixture") == New(Config{AllowLegacy: true}).telemetry.roomID("fixture") {
 		t.Fatal("room identities should rotate on process restart")
 	}
 }

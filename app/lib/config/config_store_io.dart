@@ -16,12 +16,10 @@ Future<Map<String, dynamic>?> loadConfigJson() async {
   }
 }
 
-Future<void> saveConfigJson(Map<String, dynamic> j) async {
-  try {
-    final dir = await getApplicationDocumentsDirectory();
-    final f = File('${dir.path}${Platform.pathSeparator}dsh_solo_config.json');
-    await f.writeAsString(jsonEncode(j));
-  } catch (_) {
-    // 写入失败不影响运行（下次仍可手动输入）
-  }
+/// Only called after platform secure storage has successfully persisted the settings.
+/// Cleanup failures propagate, so an incomplete migration is retried on next load.
+Future<void> deleteLegacyConfig() async {
+  final dir = await getApplicationDocumentsDirectory();
+  final file = File('${dir.path}${Platform.pathSeparator}dsh_solo_config.json');
+  if (await file.exists()) await file.delete();
 }

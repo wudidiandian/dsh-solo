@@ -56,7 +56,7 @@ func rpcPayload(t *testing.T, env *proto.Envelope) proto.RPCResponsePayload {
 }
 
 func TestUploadOfferSizeCap(t *testing.T) {
-	agent, mobile, done := setupUploadRoom(t, Config{
+	agent, mobile, done := setupUploadRoom(t, Config{AllowLegacy: true,
 		MaxUploadSize: 1024,    // 1KB 上限
 		UploadRate:    1 << 20, // 限流不影响本用例
 		UploadBurst:   1 << 20,
@@ -77,10 +77,10 @@ func TestUploadOfferSizeCap(t *testing.T) {
 }
 
 func TestUploadChunkRateLimitDisconnect(t *testing.T) {
-	_, mobile, done := setupUploadRoom(t, Config{
+	_, mobile, done := setupUploadRoom(t, Config{AllowLegacy: true,
 		MaxUploadSize: 1 << 20,
-		UploadRate:    1000,  // 1KB/s：极小速率便于测试
-		UploadBurst:   1024,  // 突发 1KB：十来个 chunk 必然耗尽
+		UploadRate:    1000, // 1KB/s：极小速率便于测试
+		UploadBurst:   1024, // 突发 1KB：十来个 chunk 必然耗尽
 	})
 	defer done()
 
@@ -111,7 +111,7 @@ func TestUploadChunkRateLimitDisconnect(t *testing.T) {
 }
 
 func TestUploadForwardHappyPath(t *testing.T) {
-	agent, mobile, done := setupUploadRoom(t, Config{
+	agent, mobile, done := setupUploadRoom(t, Config{AllowLegacy: true,
 		MaxUploadSize: 1 << 20,
 		UploadRate:    1 << 20,
 		UploadBurst:   1 << 20,

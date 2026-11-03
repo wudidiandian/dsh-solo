@@ -49,6 +49,7 @@ class CmdAction {
 class Envelope {
   /// 协议版本，固定为 1
   final int v;
+  final String? peerId;
 
   /// 报文类型
   final String type;
@@ -76,6 +77,7 @@ class Envelope {
 
   const Envelope({
     this.v = protocolVersion,
+    this.peerId,
     required this.type,
     this.reqId,
     this.sessionId,
@@ -89,6 +91,7 @@ class Envelope {
   factory Envelope.fromJson(Map<String, dynamic> j) => Envelope(
         v: (j['v'] as num?)?.toInt() ?? protocolVersion,
         type: j['type'] as String,
+        peerId: j['peerId'] as String?,
         reqId: j['reqId'] as String?,
         sessionId: j['sessionId'] as String?,
         seqId: (j['seqId'] as num?)?.toInt(),
@@ -100,6 +103,7 @@ class Envelope {
 
   Map<String, dynamic> toJson() => {
         'v': v,
+        if (peerId != null) 'peerId': peerId,
         'type': type,
         if (reqId != null) 'reqId': reqId,
         if (sessionId != null) 'sessionId': sessionId,
@@ -134,6 +138,7 @@ Envelope makeEnvelope(String type, [Object? payload, Map<String, Object?> extra 
     type: type,
     ts: DateTime.now().millisecondsSinceEpoch,
     payload: payload,
+    peerId: extra['peerId'] as String?,
     reqId: extra['reqId'] as String?,
     sessionId: extra['sessionId'] as String?,
     seqId: extra['seqId'] as int?,

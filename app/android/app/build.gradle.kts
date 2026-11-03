@@ -17,6 +17,10 @@ android {
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "dev.dshsolo.dsh_solo"
+        manifestPlaceholders["appLabel"] = "DSH-SOLO"
+        if (System.getenv("DSH_LOCAL_E2EE") == "1") {
+            ndk { abiFilters.clear(); abiFilters.add("arm64-v8a") }
+        }
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -42,6 +46,13 @@ android {
     }
 
     buildTypes {
+        debug {
+            // Local E2EE validation may coexist with the installed stable app.
+            if (System.getenv("DSH_LOCAL_E2EE") == "1") {
+                applicationIdSuffix = ".e2ee"
+                manifestPlaceholders["appLabel"] = "DSH-SOLO E2EE"
+            }
+        }
         release {
             // Production releases require the persistent signing key from environment variables.
             signingConfig = signingConfigs.getByName("release")

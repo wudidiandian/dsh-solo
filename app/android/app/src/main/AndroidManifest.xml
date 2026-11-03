@@ -4,7 +4,8 @@
     <!-- 扫码配对需要（mobile_scanner 会自动合并，此处显式声明保险） -->
     <uses-permission android:name="android.permission.CAMERA"/>
     <application
-        android:label="dsh_solo"
+        android:label="${appLabel}"
+        android:allowBackup="false"
         android:name="${applicationName}"
         android:usesCleartextTraffic="true"
         android:icon="@mipmap/ic_launcher">

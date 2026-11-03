@@ -16,6 +16,7 @@ export type PushLevel = 'none' | 'normal' | 'high'
 
 /** 全部报文类型 */
 export type MessageType =
+  | 'e2ee.hello' | 'e2ee.welcome' | 'e2ee.data' | 'e2ee.ready' | 'e2ee.close'
   // 握手与鉴权
   | 'hello.agent' // agent → relay
   | 'hello.mobile' // mobile → relay
@@ -36,6 +37,8 @@ export type MessageType =
 export interface Envelope<P = unknown> {
   /** 协议版本，固定为 1 */
   v: number
+  /** Opaque transport connection ID; never a session or device identity. */
+  peerId?: string
   /** 报文类型 */
   type: MessageType
   /** RPC 关联 ID（cmd.dispatch / rpc.response 成对出现） */
@@ -60,11 +63,13 @@ export interface Envelope<P = unknown> {
 
 export interface HelloAgentPayload {
   deviceToken: string
+  e2ee?: number
   agentInfo?: string
 }
 
 export interface HelloMobilePayload {
   deviceToken: string
+  e2ee?: number
   deviceInfo?: string
 }
 

@@ -48,14 +48,14 @@ void main() {
     await relay.start();
     final state = AppState();
     try {
-      final old = RelayClient(url: relay.url, deviceToken: 'correct-token');
+      final old = RelayClient(allowUnencryptedForTests: true, url: relay.url, deviceToken: 'correct-token');
       state.connect(old);
       await waitFor(
         () => state.isDesktopConnected && state.sessions.isNotEmpty,
       );
       final lateStatus = old.onStatus!;
       final lateEnvelope = old.onEnvelope!;
-      state.connect(RelayClient(url: relay.url, deviceToken: 'wrong-token'));
+      state.connect(RelayClient(allowUnencryptedForTests: true, url: relay.url, deviceToken: 'wrong-token'));
       expect(state.isDesktopConnected, isFalse);
       expect(state.sessions, isEmpty);
       expect(state.models, isEmpty);
@@ -127,7 +127,7 @@ void main() {
       final state = AppState();
       try {
         state.connect(
-          RelayClient(url: relay.url, deviceToken: 'correct-token'),
+          RelayClient(allowUnencryptedForTests: true, url: relay.url, deviceToken: 'correct-token'),
         );
         await waitFor(
           () => state.desktopError != null && state.sessions.isNotEmpty,
@@ -135,7 +135,7 @@ void main() {
         expect(state.isDesktopConnected, isFalse);
         online = true;
         state.connect(
-          RelayClient(url: relay.url, deviceToken: 'correct-token'),
+          RelayClient(allowUnencryptedForTests: true, url: relay.url, deviceToken: 'correct-token'),
         );
         await waitFor(() => state.isDesktopConnected);
         expect(state.desktopError, isNull);

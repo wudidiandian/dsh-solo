@@ -1,5 +1,5 @@
 import QRCode from 'qrcode'
-import { pairUri } from './pairing.js'
+import { pairUri, pairingCode } from './pairing.js'
 
 export const PAIRING_ENDPOINT = 'dsh-solo-pairing'
 interface Route {
@@ -13,6 +13,7 @@ export interface PairingConnection {
   fetch: { register(route: Route): () => unknown }
 }
 interface Options {
+  getEncryptionKey?(): string
   getToken(): string
   getRelayUrl(): string
   getBrowserUrl(): string | null
@@ -42,11 +43,11 @@ export function registerPairingBridge(connection: PairingConnection, options: Op
           const active = () => !request.signal.aborted && options.isActive()
           if (!active()) return respond(fail('unavailable', 'Pairing is unavailable'))
           try {
-            if (operation === 'reveal') return respond({ ok: true, value: { token: options.getToken() } })
+            if (operation === 'reveal') return respond({ ok: true, value: { token: options.getEncryptionKey ? pairingCode(options.getRelayUrl(), options.getToken(), options.getEncryptionKey()) : options.getToken() } })
             if (operation === 'reset') await options.resetToken()
             if (!active()) return respond(fail('unavailable', 'Pairing is unavailable'))
             const token = options.getToken()
-            const qrSvg = await QRCode.toString(pairUri(options.getRelayUrl(), token), { type: 'svg', margin: 1 })
+            const qrSvg = await QRCode.toString(pairUri(options.getRelayUrl(), token, options.getEncryptionKey?.()), { type: 'svg', margin: 1 })
             if (!active()) return respond(fail('unavailable', 'Pairing is unavailable'))
             return respond({ ok: true, value: {
               qrSvg,

@@ -49,3 +49,6 @@ private-docs/
 
 # Locally compiled relay executable
 deploy/relay-linux-*
+
+# E2EE pairing credentials (never commit)
+**/pairing-key.json

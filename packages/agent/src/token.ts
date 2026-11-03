@@ -1,7 +1,7 @@
 // Device token management: resolve (explicit config > persisted file > newly
 // generated), persist atomically under the agent state dir (<workspace>/.dsh-solo).
 import { randomBytes } from 'node:crypto'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, writeFile, chmod } from 'node:fs/promises'
 import { join } from 'node:path'
 
 export const TOKEN_FILE_NAME = 'device-token'
@@ -27,10 +27,10 @@ async function readTokenFile(stateDir: string): Promise<string | null> {
 
 /** Atomic write: tmp file + rename within the same directory */
 export async function writeTokenFile(stateDir: string, token: string): Promise<void> {
-  await mkdir(stateDir, { recursive: true })
+  await mkdir(stateDir, { recursive: true, mode: 0o700 })
   const finalPath = join(stateDir, TOKEN_FILE_NAME)
   const tmpPath = `${finalPath}.${process.pid}.${Date.now()}.tmp`
-  await writeFile(tmpPath, `${token}\n`, 'utf8')
+  await writeFile(tmpPath, `${token}\n`, { encoding: 'utf8', mode: 0o600 })
   await rename(tmpPath, finalPath)
 }
 
@@ -46,7 +46,7 @@ export async function resolveDeviceToken(
   const trimmed = explicit?.trim()
   if (trimmed) return trimmed
   const persisted = await readTokenFile(stateDir)
-  if (persisted) return persisted
+  if (persisted) { await chmod(join(stateDir, TOKEN_FILE_NAME), 0o600); return persisted }
   const token = generateToken()
   try {
     await writeTokenFile(stateDir, token)

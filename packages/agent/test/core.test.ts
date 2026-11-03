@@ -8,6 +8,7 @@ import { AgentCore, type AgentSessionLike, type ApprovalRequest, type HarnessSer
 // ---------------------------------------------------------------------------
 
 class MockRelay {
+  isConnected() { return true }
   sent: Envelope[] = []
   private handlers = new Map<string, Array<(env: Envelope) => void>>()
 
@@ -33,6 +34,30 @@ class MockRelay {
     return this.ofType('rpc.response').at(-1)
   }
 }
+
+it('coalesces a token burst without losing Unicode and flushes before durable completion', async () => {
+  vi.useFakeTimers()
+  const relay = new MockRelay()
+  const { services, emitEvent } = makeServices()
+  const core = new AgentCore(relay, { services })
+  core.start()
+  try {
+    for (let i = 0; i < 2000; i++) core.sendStreamDelta('fast', 'text-delta', '字🚀')
+    expect(relay.ofType('session.stream')).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(100)
+    expect(relay.ofType('session.stream')).toHaveLength(1)
+    expect(relay.ofType('session.stream')[0].payload).toEqual({ kind: 'text-delta', text: '字🚀'.repeat(2000) })
+    core.sendStreamDelta('fast', 'text-delta', '最后一句')
+    emitEvent('fast', { kind: 'assistant/message' })
+    emitEvent('fast', { kind: 'turn/end' })
+    await vi.advanceTimersByTimeAsync(200)
+    expect(relay.sent.map(e => e.type)).toEqual(['session.stream', 'session.stream', 'session.event', 'session.event'])
+    core.sendStreamDelta('fast', 'text-delta', 'must not survive stop')
+    core.stop()
+    await vi.advanceTimersByTimeAsync(200)
+    expect(relay.ofType('session.stream')).toHaveLength(2)
+  } finally { core.stop(); vi.useRealTimers() }
+})
 
 function makeServices() {
   const sessions = new Map<string, AgentSessionLike>()

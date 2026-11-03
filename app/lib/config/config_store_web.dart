@@ -15,10 +15,6 @@ Future<Map<String, dynamic>?> loadConfigJson() async {
   }
 }
 
-Future<void> saveConfigJson(Map<String, dynamic> j) async {
-  try {
-    html.window.localStorage[configStorageKey] = jsonEncode(j);
-  } catch (_) {
-    // 写入失败不影响运行（下次仍可手动输入）
-  }
+Future<void> deleteLegacyConfig() async {
+  html.window.localStorage.remove(configStorageKey);
 }

@@ -11,6 +11,10 @@ const (
 
 // 报文类型（与 TS 端 MessageType 一致）
 const (
+	TypeSecureHello   = "e2ee.hello"
+	TypeSecureWelcome = "e2ee.welcome"
+	TypeSecureData    = "e2ee.data"
+	TypeSecureClose   = "e2ee.close"
 	TypeHelloAgent    = "hello.agent"
 	TypeHelloMobile   = "hello.mobile"
 	TypeHelloOK       = "hello.ok"
@@ -39,6 +43,7 @@ const (
 
 // Envelope 统一 JSON 报文信封。
 type Envelope struct {
+	PeerID      string          `json:"peerId,omitempty"`
 	V           int             `json:"v"`
 	Type        string          `json:"type"`
 	ReqID       string          `json:"reqId,omitempty"`
@@ -79,15 +84,19 @@ func Encode(e *Envelope) ([]byte, error) {
 
 type HelloAgentPayload struct {
 	DeviceToken string `json:"deviceToken"`
+	E2EE        int    `json:"e2ee,omitempty"`
 	AgentInfo   string `json:"agentInfo,omitempty"`
 }
 
 type HelloMobilePayload struct {
 	DeviceToken string `json:"deviceToken"`
+	E2EE        int    `json:"e2ee,omitempty"`
 	DeviceInfo  string `json:"deviceInfo,omitempty"`
+	SecureID    string `json:"secureId,omitempty"`
 }
 
 type HelloOKPayload struct {
+	E2EE int    `json:"e2ee,omitempty"`
 	Role string `json:"role"`
 }
 

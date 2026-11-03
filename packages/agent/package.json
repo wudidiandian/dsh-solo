@@ -1,6 +1,6 @@
 {
   "name": "dsh-solo-agent",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "DSH-SOLO 电脑端插件：Cordis 插件，注入 DeepSeek Harness 上下文并向 relay 维持长连接（手机远程掌控电脑 Agent）",
   "type": "module",
   "main": "dist/dsh-solo-agent.bundle.js",

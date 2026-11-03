@@ -43,22 +43,43 @@ func (r *Room) registerAgent(c *client) {
 
 func (r *Room) unregisterAgent(c *client) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	var mobiles []*client
 	if r.agent == c {
 		r.agent = nil
+		if c.secure {
+			for m := range r.mobiles {
+				if m.secure {
+					mobiles = append(mobiles, m)
+				}
+			}
+		}
 	}
 	r.trackEmptyLocked()
+	r.mu.Unlock()
+	for _, m := range mobiles {
+		raw, _ := proto.Encode(&proto.Envelope{Type: proto.TypeSecureClose, PeerID: m.secureID})
+		m.enqueue(raw)
+	}
 }
 
 // registerMobile mobile 接入；注册后立即回吐缓存的快照，实现「秒开」。
 func (r *Room) registerMobile(c *client) {
 	r.mu.Lock()
+	if c.secure {
+		for m := range r.mobiles {
+			if m.secure && m.secureID == c.secureID {
+				r.mu.Unlock()
+				c.close("duplicate secure connection ID")
+				return
+			}
+		}
+	}
 	r.mobiles[c] = true
 	r.trackEmptyLocked()
 	snap := r.snapshot
 	r.mu.Unlock()
 
-	if snap != nil {
+	if snap != nil && !c.secure {
 		if raw, err := proto.Encode(snap); err == nil {
 			c.enqueue(raw)
 		}
@@ -67,7 +88,7 @@ func (r *Room) registerMobile(c *client) {
 
 func (r *Room) unregisterMobile(c *client) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	registered := r.mobiles[c]
 	delete(r.mobiles, c)
 	for reqID, owner := range r.waiters {
 		if owner == c {
@@ -75,6 +96,12 @@ func (r *Room) unregisterMobile(c *client) {
 		}
 	}
 	r.trackEmptyLocked()
+	agent := r.agent
+	r.mu.Unlock()
+	if registered && c.secure && agent != nil && agent.secure {
+		raw, _ := proto.Encode(&proto.Envelope{Type: proto.TypeSecureClose, PeerID: c.secureID})
+		agent.enqueue(raw)
+	}
 }
 
 // trackEmptyLocked 维护空置时刻（调用方持 r.mu）。
@@ -98,6 +125,24 @@ func (r *Room) emptySinceLocked() time.Time {
 // ---------------------------------------------------------------------------
 
 func (r *Room) routeAgent(c *client, env *proto.Envelope, raw []byte) {
+	if c.secure {
+		if env.Type != proto.TypeSecureWelcome && env.Type != proto.TypeSecureData && env.Type != proto.TypeSecureClose {
+			return
+		}
+		r.mu.Lock()
+		var target *client
+		for m := range r.mobiles {
+			if m.secure && m.secureID == env.PeerID {
+				target = m
+				break
+			}
+		}
+		r.mu.Unlock()
+		if target != nil {
+			target.enqueue(raw)
+		}
+		return
+	}
 	switch env.Type {
 	case proto.TypeAgentSnapshot:
 		r.storeSnapshot(env, raw)
@@ -236,6 +281,27 @@ func (r *Room) routeRPC(env *proto.Envelope, raw []byte) {
 // ---------------------------------------------------------------------------
 
 func (r *Room) routeMobile(c *client, env *proto.Envelope, raw []byte) {
+	if c.secure {
+		if env.Type != proto.TypeSecureHello && env.Type != proto.TypeSecureData {
+			return
+		}
+		// Bind opaque routing IDs to the connection. No business payload is parsed or cached.
+		if env.PeerID != c.secureID {
+			return
+		}
+		if c.uploadLimiter != nil && !c.uploadLimiter.AllowN(int64(len(raw))) {
+			r.hub.telemetry.count(func(v *Counters) { v.UploadLimited++ })
+			c.close("encrypted bandwidth exceeded")
+			return
+		}
+		r.mu.Lock()
+		agent := r.agent
+		r.mu.Unlock()
+		if agent != nil && agent.secure {
+			agent.enqueue(raw)
+		}
+		return
+	}
 	switch env.Type {
 	case proto.TypeSyncRequest:
 		var p proto.SyncRequestPayload

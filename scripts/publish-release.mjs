@@ -42,16 +42,19 @@ if (found.status === 0) {
 }
 const output = resolve(root, 'release')
 await mkdir(output, { recursive: true })
-const files = [`dsh-solo-agent-${version}.tgz`, 'dsh-solo.apk', 'BUILD.json']
-for (const name of files.slice(0, 2)) if (!(await stat(join(output, name))).isFile()) throw new Error(`Missing release asset: ${name}`)
-await writeFile(join(output, 'BUILD.json'), JSON.stringify({ ...metadata, builtAt: new Date().toISOString(), androidBuild: 'release' }, null, 2) + '\n')
+const files = [`dsh-solo-agent-${version}.tgz`, 'dsh-solo.apk', 'relay-linux-amd64', 'relay-linux-arm64', 'BUILD.json']
+for (const name of files.slice(0, -1)) if (!(await stat(join(output, name))).isFile()) throw new Error(`Missing release asset: ${name}`)
+await writeFile(join(output, 'BUILD.json'), JSON.stringify({ ...metadata, builtAt: new Date().toISOString(), androidBuild: 'release', relayTargets: ['linux/amd64', 'linux/arm64'] }, null, 2) + '\n')
 const sums = []
 for (const name of files) sums.push(`${createHash('sha256').update(await readFile(join(output, name))).digest('hex')}  ${name}`)
 await writeFile(join(output, 'SHA256SUMS'), sums.join('\n') + '\n')
 files.push('SHA256SUMS')
 const notes = `${marker}\n# DSH-SOLO ${version}\n\n- DeepSeek Harness 官方桌面版：插件 → 添加插件，输入 \`dsh-solo-agent\`。\n- Android：下载并安装下方 \`dsh-solo.apk\`，从“手机配对”扫码连接。\n- 离线安装插件：解压 \`dsh-solo-agent-${version}.tgz\`，选择包含 package.json 的 package 目录。\n- 校验文件：SHA256SUMS；构建来源：BUILD.json。\n\nSource: ${sourceRepository}@${sourceCommit}\n\n本工作流发布 GitHub 安装包；npm 发布和服务器部署分别执行。\n`
+let versionNotes = ''
+try { versionNotes = await readFile(resolve(root, 'docs/releases', `${tag}.md`), 'utf8') }
+catch (error) { if (error.code !== 'ENOENT') throw error }
 const notesFile = resolve(root, '.generated/release-notes.md')
-await writeFile(notesFile, notes)
+await writeFile(notesFile, notes + '\n' + versionNotes)
 if (!tagExists) {
   const local = run('git', ['rev-parse', '--verify', `refs/tags/${tag}^{commit}`], { allowMissing: true })
   if (local.status === 0 && local.stdout.trim() !== sourceCommit) throw new Error('The local tag points to another commit')

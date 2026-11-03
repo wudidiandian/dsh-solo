@@ -1,3 +1,4 @@
+import { resolvePairingKey } from './e2ee.js'
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -117,12 +118,15 @@ export function apply(ctx: Context, config: Config) {
     // 令牌解析：显式配置 > 已持久化文件 > 自动生成并写入
     const deviceToken = await resolveDeviceToken(config.deviceToken, stateDir)
     if (lifetime.signal.aborted) return
+    let encryptionKey = await resolvePairingKey(stateDir, deviceToken)
+    if (lifetime.signal.aborted) return
     const relayUrl = config.relayUrl ?? DEFAULT_RELAY_URL
 
     const relayClient = new SoloRelayClient({
       url: relayUrl,
       deviceToken,
       agentInfo: 'dsh-solo-agent',
+      encryptionKey,
     })
     client = relayClient
     // 必须监听 error：EventEmitter emit('error') 无监听器时会以 uncaughtException 逃逸，
@@ -323,7 +327,10 @@ export function apply(ctx: Context, config: Config) {
       workspaceRoots: config.workspaceRoots ?? [],
       deviceToken,
       relayUrl,
-      rotateDeviceToken: (t) => relayClient.reconnectWithToken(t),
+      rotateDeviceToken: async (t) => {
+        encryptionKey = await resolvePairingKey(stateDir, t)
+        relayClient.reconnectWithToken(t, encryptionKey)
+      },
       // Project names are requested on demand; do not pre-scan project files.
       buildSnapshot: async () => ({}),
       listDir: (p) => listDirectorySafe(p, config.workspaceRoots ?? []),
@@ -332,6 +339,7 @@ export function apply(ctx: Context, config: Config) {
     // 本机配对页（127.0.0.1:8790+）：展示 relay 地址/token/二维码，支持重置
     pairing = new PairingServer({
       getToken: () => core?.getDeviceToken() ?? '',
+      getEncryptionKey: () => encryptionKey,
       getRelayUrl: () => relayUrl,
       resetToken: async () => {
         if (!core) throw new Error('agent not ready')
@@ -341,6 +349,7 @@ export function apply(ctx: Context, config: Config) {
     pairing.start()
     disposePairingBridge = registerPairingBridge(anyCtx.connection, {
       getToken: () => core?.getDeviceToken() ?? '',
+      getEncryptionKey: () => encryptionKey,
       getRelayUrl: () => relayUrl,
       getBrowserUrl: () => pairing?.address ?? null,
       isConnected: () => relayClient.isConnected(),
@@ -359,6 +368,9 @@ export function apply(ctx: Context, config: Config) {
     // 就是 App"最后一下全出"的原因。这里把增量帧映射为 session.stream 直通
     // relay；agent-scoped dispatch 按宿主文档全局监听即可收到所有 agent。
     if (typeof anyCtx.on === 'function') {
+      // Process-local state covers turns that started before the phone joined,
+      // including desktop-created agents waiting for tools or approval.
+      anyCtx.on('agent/status', () => { void core?.publishSnapshot() })
       anyCtx.on('agent/assistant-stream', (payload: unknown) => {
         try {
           const p = payload as { agent?: { session?: { header?: { id?: string } } }; frame?: {
@@ -457,6 +469,7 @@ function mapAgentSummary(a: any, titles: Map<string, string>, handles: Map<strin
     updatedAt: a?.session?.header?.createdAt,
     // deleteSession 的能力对象只在本插件手里：标记 App 端可否删除（驱动 UI 区分来源）
     deletable: handles.has(id),
+    running: a?.status === 'running',
   }
 }
 

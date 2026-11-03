@@ -4,6 +4,8 @@
 
 Use DeepSeek Harness on your computer from an Android phone: follow sessions, send tasks, select models, transfer attachments and respond to approvals.
 
+> **0.1.5 implements phone-to-plugin end-to-end encryption.** Upgrading from `0.1.4` requires matching relay, plugin and app versions, followed by pairing with a new QR code. Self-hosters should read the [upgrade and rollback guide](deploy/E2EE_UPGRADE.md).
+
 ## Install
 
 **The official DSH-SOLO plugin comes preconfigured for the official cloud relay service. Install the plugin and Android app, then scan to pair; no server deployment or server domain entry is required.**
@@ -18,7 +20,7 @@ dsh-solo-agent
 
 Select **Enable now**. If **Phone pairing** does not appear in the sidebar, fully quit the desktop app through its application menu and reopen it; closing the window may only hide it to the tray.
 
-Without a version suffix, installation uses npm's `latest` stable tag. To pin a version, enter `dsh-solo-agent@0.1.4`. If the package cannot be found, switch to the **official npm registry** while mirrors catch up. Existing installations need an update or reinstall as prompted by the host; pairing data in your home directory's `.dsh-solo` can normally be retained.
+Without a version suffix, installation uses npm's `latest` stable tag. To pin a version, enter `dsh-solo-agent@0.1.5`. If the package cannot be found, switch to the **official npm registry** while mirrors catch up. Existing installations need an update or reinstall as prompted by the host; pairing data in your home directory's `.dsh-solo` can normally be retained.
 
 <details>
 <summary>Desktop plugin installation screenshots</summary>
@@ -52,7 +54,7 @@ Install `dsh-solo.apk` on your Android phone. Check release notes for compatible
 
 1. Select **Phone pairing** in the desktop sidebar or plugin detail page.
 2. Tap **Scan to pair** in the phone app, scan the embedded QR code and connect. The address and token are filled automatically.
-3. For manual pairing, reveal the token on the desktop pairing page and enter it in the app. The official app already contains the official relay address.
+3. For manual pairing, reveal the complete encrypted pairing code on the desktop and paste it into the app. The official app already contains the official relay address.
 
 Keep DeepSeek Harness and the plugin running, with both devices online. Do not share pairing credentials. Android is the current distribution target; other platforms require additional validation.
 
@@ -95,9 +97,11 @@ Discovery in the third-party `dsh-market` requires separate catalog inclusion; n
 
 ## Current security and privacy
 
-The current version **does not implement end-to-end encryption between the phone app and desktop plugin**. WSS protects transport to the relay entry point with TLS; the relay can still read forwarded messages, tasks and attachments, and buffers snapshots and some events in memory for reconnection. Plain WS in self-hosted deployments does not provide this transport encryption.
+Version 0.1.5 implements **phone-to-plugin end-to-end encryption**. An independent QR pairing secret authenticates an ephemeral X25519 exchange. Each phone gets a separate session using AES-256-GCM with integrity and ordered-message replay checks. Conversations, tool results, project lists, approvals and attachment contents are encrypted at the endpoints.
 
-Devices pair using a randomly generated token. Treat it as an access credential and keep both the token and QR code private. The monitoring page shows connection and resource statistics rather than conversation bodies, which does not prevent the server from accessing those bodies. End-to-end encryption is the highest-priority planned feature below, not a capability of the current version.
+The relay forwards ciphertext without pairing secrets or decryption keys. Connection IPs, routing tokens, timing and traffic sizes remain visible. Reconnection history is re-encrypted by the desktop; continue using WSS for public deployments. App pairing credentials use platform secure storage; local session caches do not yet have application-level encryption at rest.
+
+Legacy QR codes and routing tokens alone cannot pair the new clients. Protect complete QR codes and pairing codes; resetting them requires every phone to pair again. The desktop and its configured model services still process task content. Functional and device testing have been completed; the protocol has not undergone an independent security audit. See [design and testing notes](docs/E2EE.md).
 
 ## Build and self-host
 
@@ -123,9 +127,10 @@ Run the local relay with `npm run relay`. Override the plugin's `relayUrl` for y
 
 ## Roadmap
 
-These features are planned and have not been released. Priorities may change based on feedback and development progress; see release notes for available functionality.
+Completed and planned capabilities are listed below. Priorities may change based on feedback and development progress; see release notes for available functionality.
 
-- [ ] **App ↔ desktop plugin end-to-end encryption (highest priority, before iOS)**: verify device identities through QR pairing and establish endpoint keys independent of the relay pairing token. Encrypt conversation bodies, tasks, approvals and attachments so the relay forwards and buffers ciphertext. Include secure key storage, integrity and replay protection, reconnection, multiple devices and protocol compatibility without silently falling back to plaintext. Metadata such as IP addresses, timing and traffic sizes may remain visible to the relay; the desktop and its configured model services still process task content.
+- [x] **End-to-end encryption**: encrypted conversations, tools, projects, approvals and attachments between the phone and plugin, secure credential storage and replay protection.
+- [ ] **Encryption key management**: per-device revocation, device management and key lifecycle improvements.
 - [ ] **iOS app**: iPhone support, build and signing setup, and TestFlight distribution.
 - [ ] **HarmonyOS app**: platform adaptation, HAP builds and device testing.
 - [ ] **System notifications and offline push**: notify users when tasks finish or need approval.

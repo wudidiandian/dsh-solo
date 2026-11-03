@@ -111,7 +111,7 @@ describe('SoloRelayClient', () => {
     const relay = startMockRelay()
     const url = await listenMock(relay)
 
-    const client = new SoloRelayClient({ url, deviceToken: 'tok', backoffBaseMs: 10 })
+    const client = new SoloRelayClient({ allowUnencryptedForTests: true, url, deviceToken: 'tok', backoffBaseMs: 10 })
     const connected = vi.fn()
     client.on('connected', connected)
     client.start()
@@ -127,7 +127,7 @@ describe('SoloRelayClient', () => {
     const relay = startMockRelay()
     const url = await listenMock(relay)
 
-    const client = new SoloRelayClient({ url, deviceToken: 'tok', backoffBaseMs: 10 })
+    const client = new SoloRelayClient({ allowUnencryptedForTests: true, url, deviceToken: 'tok', backoffBaseMs: 10 })
     // 先发两条（未连接 → 入队）
     client.send(makeEnvelope('agent.snapshot', { timestamp: 1 }))
     client.send(makeEnvelope('session.event', {}, { seqId: 1 }))
@@ -148,7 +148,7 @@ describe('SoloRelayClient', () => {
     const relay = startMockRelay()
     const url = await listenMock(relay)
 
-    const client = new SoloRelayClient({
+    const client = new SoloRelayClient({ allowUnencryptedForTests: true,
       url,
       deviceToken: 'tok',
       backoffBaseMs: 10,
@@ -173,7 +173,7 @@ describe('SoloRelayClient', () => {
     const relay = startMockRelay()
     const url = await listenMock(relay)
 
-    const client = new SoloRelayClient({ url, deviceToken: 'tok', backoffBaseMs: 10 })
+    const client = new SoloRelayClient({ allowUnencryptedForTests: true, url, deviceToken: 'tok', backoffBaseMs: 10 })
     const commands: Envelope[] = []
     client.on('command', (env: Envelope) => commands.push(env))
     client.start()
@@ -190,7 +190,7 @@ describe('SoloRelayClient', () => {
     const url = await listenMock(relay)
 
     const errors: Error[] = []
-    const client = new SoloRelayClient({ url, deviceToken: 'bad', backoffBaseMs: 10 })
+    const client = new SoloRelayClient({ allowUnencryptedForTests: true, url, deviceToken: 'bad', backoffBaseMs: 10 })
     client.on('error', (e: Error) => errors.push(e))
     client.start()
 
@@ -204,7 +204,7 @@ describe('SoloRelayClient', () => {
   })
 
   it('初始状态为 idle 且可观测', () => {
-    const client = new SoloRelayClient({ url: 'ws://127.0.0.1:1', deviceToken: 't' })
+    const client = new SoloRelayClient({ allowUnencryptedForTests: true, url: 'ws://127.0.0.1:1', deviceToken: 't' })
     expect(client.currentState).toBe('idle')
   })
 })
@@ -213,7 +213,7 @@ describe('SoloRelayClient', () => {
 it('keeps an idle healthy connection when ping interval exceeds pong timeout', async () => {
   const relay = startMockRelay()
   const url = await listenMock(relay)
-  const client = new SoloRelayClient({ url, deviceToken: 'test', heartbeatIntervalMs: 60, heartbeatTimeoutMs: 30, backoffBaseMs: 5 })
+  const client = new SoloRelayClient({ allowUnencryptedForTests: true, url, deviceToken: 'test', heartbeatIntervalMs: 60, heartbeatTimeoutMs: 30, backoffBaseMs: 5 })
   const connected = vi.fn()
   client.on('connected', connected)
   client.start()
@@ -227,7 +227,7 @@ it('keeps an idle healthy connection when ping interval exceeds pong timeout', a
 })
 
 it('does not reconnect or queue messages after explicit disposal', async () => {
-  const client = new SoloRelayClient({ url: 'ws://127.0.0.1:1/ws', deviceToken: 'test' })
+  const client = new SoloRelayClient({ allowUnencryptedForTests: true, url: 'ws://127.0.0.1:1/ws', deviceToken: 'test' })
   client.send(makeEnvelope('agent.snapshot', {}))
   client.stop()
   client.reconnectWithToken('replacement')
@@ -239,11 +239,40 @@ it('does not reconnect or queue messages after explicit disposal', async () => {
 it('reconnects when the server does not answer heartbeat pings', async () => {
   const relay = startMockRelay({ autoPong: false })
   const url = await listenMock(relay)
-  const client = new SoloRelayClient({ url, deviceToken: 'test', heartbeatIntervalMs: 40, heartbeatTimeoutMs: 20, backoffBaseMs: 5 })
+  const client = new SoloRelayClient({ allowUnencryptedForTests: true, url, deviceToken: 'test', heartbeatIntervalMs: 40, heartbeatTimeoutMs: 20, backoffBaseMs: 5 })
   client.on('error', () => {})
   client.start()
   try {
     await waitFor(() => client.isConnected())
     await waitFor(() => relay.serverConns.length >= 2)
+  } finally { client.stop() }
+})
+
+it('encrypted production transport never sends a pairing key or accepts plaintext commands', async () => {
+  wss = new WebSocketServer({ host: '127.0.0.1', port: 0 })
+  await new Promise<void>(resolve => wss!.once('listening', resolve))
+  const received: Envelope[] = []
+  wss.on('connection', socket => socket.on('message', bytes => {
+    const env = JSON.parse(bytes.toString()) as Envelope
+    received.push(env)
+    if (env.type === 'hello.agent') {
+      socket.send(JSON.stringify(makeEnvelope('hello.ok', { role: 'agent', e2ee: 1 })))
+      socket.send('null')
+      socket.send(JSON.stringify({ v: 1, type: 42 }))
+      socket.send(JSON.stringify(makeEnvelope('cmd.dispatch', { action: 'session.prompt', data: { prompt: 'FORGED' } })))
+    }
+  }))
+  const key = Buffer.alloc(32, 7).toString('base64url')
+  const client = new SoloRelayClient({ url: `ws://127.0.0.1:${(wss.address() as {port:number}).port}/ws`, deviceToken: 'test-token', encryptionKey: key })
+  const command = vi.fn()
+  client.on('error', () => {})
+  client.on('command', command)
+  client.start()
+  try {
+    await vi.waitFor(() => expect(client.isConnected()).toBe(true))
+    expect(command).not.toHaveBeenCalled()
+    expect(JSON.stringify(received)).not.toContain(key)
+    client.send(makeEnvelope('agent.snapshot', { private: 'SECRET_SNAPSHOT' }))
+    expect(JSON.stringify(received)).not.toContain('SECRET_SNAPSHOT')
   } finally { client.stop() }
 })

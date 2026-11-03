@@ -20,7 +20,7 @@ for (const architecture of ['amd64', 'arm64']) {
   })
   files.push(name)
 }
-for (const name of ['MONITORING.md', 'monitor.env.example', 'relay-monitor.conf']) {
+for (const name of ['MONITORING.md', 'monitor.env.example', 'relay-monitor.conf', 'E2EE_UPGRADE.md', 'relay.service']) {
   await copyFile(resolve(root, 'deploy', name), resolve(output, name))
   files.push(name)
 }

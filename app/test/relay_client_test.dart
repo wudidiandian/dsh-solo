@@ -27,7 +27,7 @@ void main() {
       );
       await relay.start();
 
-      final client = RelayClient(url: relay.url, deviceToken: 'test-phone');
+      final client = RelayClient(allowUnencryptedForTests: true, url: relay.url, deviceToken: 'test-phone');
       final snapshots = <Envelope>[];
       client.onEnvelope = (env) {
         if (env.type == MsgType.agentSnapshot) snapshots.add(env);
@@ -71,7 +71,7 @@ void main() {
       );
       await relay.start();
 
-      final client = RelayClient(url: relay.url, deviceToken: 't');
+      final client = RelayClient(allowUnencryptedForTests: true, url: relay.url, deviceToken: 't');
       client.start();
       await waitFor(() => client.status == RelayStatus.open);
 
@@ -112,7 +112,7 @@ void main() {
       );
       await relay.start();
 
-      final client = RelayClient(
+      final client = RelayClient(allowUnencryptedForTests: true,
         url: relay.url,
         deviceToken: 't',
         baseBackoffMs: 20,
@@ -155,7 +155,7 @@ void main() {
       );
       await relay.start();
 
-      final client = RelayClient(url: relay.url, deviceToken: 'bad', baseBackoffMs: 20);
+      final client = RelayClient(allowUnencryptedForTests: true, url: relay.url, deviceToken: 'bad', baseBackoffMs: 20);
       client.start();
 
       await waitFor(() => client.status == RelayStatus.fatal);

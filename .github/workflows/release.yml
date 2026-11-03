@@ -86,6 +86,11 @@ jobs:
           flutter test
           flutter build apk --release --dart-define-from-file=../.generated/flutter-defines.json
           cp build/app/outputs/flutter-apk/app-release.apk ../release/dsh-solo.apk
+      - name: Build Linux relay binaries
+        run: |
+          for arch in amd64 arm64; do
+            GOOS=linux GOARCH="$arch" CGO_ENABLED=0 go -C server build -trimpath -ldflags='-s -w' -o "$GITHUB_WORKSPACE/release/relay-linux-$arch" ./cmd/relay
+          done
       - name: Save built packages for troubleshooting
         uses: actions/upload-artifact@v4
         with:

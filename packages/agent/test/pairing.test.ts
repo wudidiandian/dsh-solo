@@ -15,7 +15,7 @@ it('discovers the next available port without exposing credentials through disco
   blocker = createServer()
   await new Promise<void>(resolve => blocker!.listen(0, '127.0.0.1', resolve))
   const basePort = (blocker.address() as { port: number }).port
-  pairing = new PairingServer({ basePort, maxPort: basePort + 20, getToken: () => 'private-pairing-token', getRelayUrl: () => 'wss://private.example/ws', resetToken: async () => 'new-token' })
+  pairing = new PairingServer({ basePort, maxPort: basePort + 20, getToken: () => 'private-pairing-token', getEncryptionKey: () => Buffer.alloc(32, 7).toString('base64url'), getRelayUrl: () => 'wss://private.example/ws', resetToken: async () => 'new-token' })
   pairing.start()
   const deadline = Date.now() + 4000
   while (!pairing.address && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
@@ -26,7 +26,12 @@ it('discovers the next available port without exposing credentials through disco
   expect(await status.json()).toEqual({ service: 'dsh-solo-pairing', url: pairing.address })
   const credentials = await fetch(`${pairing.address}/api/token`)
   expect(credentials.headers.get('access-control-allow-origin')).toBeNull()
-  expect((await credentials.json()).token).toBe('private-pairing-token')
+  const details = await credentials.json()
+  expect(details.token).toBe('private-pairing-token')
+  expect(details.pairingCode).toMatch(/^dshpair1\./)
+  expect((await fetch(`${pairing.address}/api/token`, { headers: { Origin: 'https://attacker.example' } })).status).toBe(403)
+  expect((await fetch(`${pairing.address}/api/reset`, { method: 'POST', headers: { Origin: 'https://attacker.example' } })).status).toBe(403)
+  expect(credentials.headers.get('cache-control')).toBe('no-store')
 })
 
 it('ignores unrelated responses and refuses a discovery response that redirects outside loopback', async () => {

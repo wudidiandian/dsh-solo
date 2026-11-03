@@ -26,6 +26,8 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> {
   late final TextEditingController _urlCtrl;
   late final TextEditingController _tokenCtrl;
+  String? _encryptionKey;
+  String? _pairedToken;
 
   @override
   void initState() {
@@ -33,6 +35,8 @@ class _HomePageState extends State<HomePage> {
     // 预填顺序：已保存配置 > 内置默认 relay 地址；令牌由扫码或手输填入
     _urlCtrl = TextEditingController(text: widget.initialConfig?.relayUrl ?? defaultRelayUrl);
     _tokenCtrl = TextEditingController(text: widget.initialConfig?.deviceToken ?? '');
+    _encryptionKey = widget.initialConfig?.encryptionKey;
+    _pairedToken = widget.initialConfig?.deviceToken;
     // 恢复上次选中的模型；之后每次切换都立即持久化（best-effort）
     final savedModelId = widget.initialConfig?.modelId;
     if (savedModelId != null && savedModelId.isNotEmpty) {
@@ -62,15 +66,26 @@ class _HomePageState extends State<HomePage> {
   }
 
   Future<void> _connect() async {
+    final pasted = parsePairUri(_tokenCtrl.text.trim());
+    if (pasted != null) {
+      _urlCtrl.text = pasted.relayUrl; _tokenCtrl.text = pasted.token;
+      _pairedToken = pasted.token; _encryptionKey = pasted.encryptionKey;
+    }
     final url = _urlCtrl.text.trim();
     final token = _tokenCtrl.text.trim();
+    final key = token == _pairedToken ? _encryptionKey : null;
     if (url.isEmpty || token.isEmpty) return;
-    widget.state.connect(RelayClient(url: url, deviceToken: token));
-    await AppConfig(
+    widget.state.connect(RelayClient(url: url, deviceToken: token, encryptionKey: key));
+    if (key == null) return;
+    try { await AppConfig(
       relayUrl: url,
       deviceToken: token,
+      encryptionKey: key,
       modelId: widget.state.selectedModelId,
-    ).save();
+    ).save(); } catch (_) {
+      widget.state.client?.stop();
+      if (mounted) _toast('无法安全保存配对凭据，请重新配对 / Secure storage unavailable');
+    }
   }
 
   void _openSettings() {
@@ -83,6 +98,8 @@ class _HomePageState extends State<HomePage> {
     final tokenCtrl = TextEditingController(text: _tokenCtrl.text);
     // 扫码解析出的 relayUrl 静默存入内部值（UI 不展示地址），令牌回填输入框
     String? scannedUrl;
+    String? scannedKey;
+    String? scannedToken;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
@@ -108,6 +125,8 @@ class _HomePageState extends State<HomePage> {
                     );
                     if (info != null) {
                       scannedUrl = info.relayUrl;
+                      scannedKey = info.encryptionKey;
+                      scannedToken = info.token;
                       tokenCtrl.text = info.token;
                     }
                   },
@@ -129,6 +148,7 @@ class _HomePageState extends State<HomePage> {
     if (ok == true) {
       setState(() {
         if (scannedUrl != null) _urlCtrl.text = scannedUrl!;
+        if (scannedKey != null) { _encryptionKey = scannedKey; _pairedToken = scannedToken; }
         _tokenCtrl.text = tokenCtrl.text.trim();
       });
       await _connect();
@@ -144,6 +164,8 @@ class _HomePageState extends State<HomePage> {
     setState(() {
       _urlCtrl.text = info.relayUrl;
       _tokenCtrl.text = info.token;
+      _encryptionKey = info.encryptionKey;
+      _pairedToken = info.token;
     });
     _toast(AppL10n.i.qrRecognized);
   }
@@ -308,7 +330,10 @@ class _StatusChip extends StatelessWidget {
       RelayStatus.idle => (Colors.grey, AppL10n.i.statusIdle),
     };
     return Row(children: [
-      CircleAvatar(radius: 5, backgroundColor: color),
+      if (state.client?.isEndToEndEncrypted == true && state.isDesktopConnected)
+        Tooltip(message: AppL10n.i.isEn ? 'End-to-end encrypted' : '端到端加密', child: Icon(Icons.lock_outline, size: 15, color: color))
+      else
+        CircleAvatar(radius: 5, backgroundColor: color),
       const SizedBox(width: 6),
       Text(label, style: const TextStyle(fontSize: 13)),
     ]);

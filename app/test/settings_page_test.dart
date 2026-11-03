@@ -122,7 +122,7 @@ void main() {
       await tester.tap(find.text('Privacy and permissions'));
       await tester.pumpAndSettle();
       expect(
-        find.textContaining('end-to-end encryption is not implemented'),
+        find.textContaining('Pairing credentials use platform secure storage'),
         findsOneWidget,
       );
     },

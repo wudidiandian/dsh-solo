@@ -3,6 +3,9 @@
 /// 非 dshsolo:// 协议的码 toast 提示后留在页面继续扫。
 /// 相机启动失败（权限被拒/被占用等）不黑屏，显示可操作的错误面板。
 import 'dart:async';
+import 'dart:convert';
+
+import '../relay/e2ee.dart';
 
 import 'package:flutter/material.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -10,19 +13,48 @@ import 'package:mobile_scanner/mobile_scanner.dart';
 import '../l10n/app_l10n.dart';
 
 /// 一次成功扫码的解析结果
-typedef PairInfo = ({String relayUrl, String token});
+typedef PairInfo = ({String relayUrl, String token, String encryptionKey});
 
 /// 解析配对二维码内容；非 `dshsolo://pair` 协议或缺参返回 null。
 PairInfo? parsePairUri(String? raw) {
   if (raw == null || raw.isEmpty) return null;
-  final uri = Uri.tryParse(raw);
-  if (uri == null || uri.scheme != 'dshsolo' || uri.host != 'pair') return null;
-  final relay = uri.queryParameters['relay'];
-  final token = uri.queryParameters['token'];
-  if (relay == null || relay.isEmpty || token == null || token.isEmpty) {
+  try {
+    String? relay, token, key;
+    if (raw.startsWith('dshpair1.')) {
+      final value = (jsonDecode(
+        utf8.decode(base64Url.decode(base64Url.normalize(raw.substring(9)))),
+      )) as Map;
+      relay = value['relay'] as String?;
+      token = value['token'] as String?;
+      key = value['key'] as String?;
+    } else {
+      final uri = Uri.tryParse(raw);
+      if (uri == null ||
+          uri.scheme != 'dshsolo' ||
+          uri.host != 'pair' ||
+          uri.queryParameters['e2ee'] != '1')
+        return null;
+      relay = uri.queryParameters['relay'];
+      token = uri.queryParameters['token'];
+      key = uri.queryParameters['key'];
+    }
+    if (relay == null ||
+        token == null ||
+        token.isEmpty ||
+        token.length > 1024 ||
+        key == null)
+      return null;
+    final url = Uri.parse(relay);
+    if (!['ws', 'wss'].contains(url.scheme) ||
+        url.host.isEmpty ||
+        url.userInfo.isNotEmpty ||
+        url.hasFragment)
+      return null;
+    decodePairingKey(key);
+    return (relayUrl: relay, token: token, encryptionKey: key);
+  } catch (_) {
     return null;
   }
-  return (relayUrl: relay, token: token);
 }
 
 class PairScanPage extends StatefulWidget {
@@ -37,10 +69,12 @@ class _PairScanPageState extends State<PairScanPage> {
   /// with our own call below; the second start hits the ongoing permission
   /// request, latches the widget into its error state, and the preview never
   /// recovers even after the user grants the permission.
-  final MobileScannerController _controller =
-      MobileScannerController(autoStart: false);
+  final MobileScannerController _controller = MobileScannerController(
+    autoStart: false,
+  );
   bool _done = false;
   DateTime _lastErrorAt = DateTime.fromMillisecondsSinceEpoch(0);
+
   /// 相机启动失败信息（null = 预览正常）；页面显示错误面板而非黑屏
   String? _startupError;
 
@@ -80,7 +114,9 @@ class _PairScanPageState extends State<PairScanPage> {
     if (e.errorCode == MobileScannerErrorCode.permissionDenied) {
       return AppL10n.i.cameraPermission;
     }
-    return AppL10n.i.cameraStartFailed(e.errorDetails?.message ?? e.errorCode.name);
+    return AppL10n.i.cameraStartFailed(
+      e.errorDetails?.message ?? e.errorCode.name,
+    );
   }
 
   @override
@@ -108,10 +144,12 @@ class _PairScanPageState extends State<PairScanPage> {
       _lastErrorAt = now;
       ScaffoldMessenger.of(context)
         ..hideCurrentSnackBar()
-        ..showSnackBar(SnackBar(
-          content: Text(AppL10n.i.notPairingQr),
-          duration: const Duration(seconds: 2),
-        ));
+        ..showSnackBar(
+          SnackBar(
+            content: Text(AppL10n.i.notPairingQr),
+            duration: const Duration(seconds: 2),
+          ),
+        );
     }
   }
 
@@ -123,12 +161,20 @@ class _PairScanPageState extends State<PairScanPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.no_photography_outlined, size: 56, color: Colors.white70),
+            const Icon(
+              Icons.no_photography_outlined,
+              size: 56,
+              color: Colors.white70,
+            ),
             const SizedBox(height: 16),
             Text(
               _startupError ?? fallback ?? AppL10n.i.cameraStartFailedShort,
               textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white, fontSize: 14, height: 1.6),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 14,
+                height: 1.6,
+              ),
             ),
             const SizedBox(height: 20),
             FilledButton.icon(
@@ -158,8 +204,9 @@ class _PairScanPageState extends State<PairScanPage> {
           MobileScanner(
             controller: _controller,
             onDetect: _onDetect,
-            errorBuilder: (context, error) =>
-                _errorPanel(fallback: AppL10n.i.cameraErrorDetail(error.errorCode.name)),
+            errorBuilder: (context, error) => _errorPanel(
+              fallback: AppL10n.i.cameraErrorDetail(error.errorCode.name),
+            ),
           ),
           if (_startupError != null)
             ColoredBox(color: Colors.black87, child: _errorPanel()),
@@ -172,7 +219,11 @@ class _PairScanPageState extends State<PairScanPage> {
               child: Text(
                 AppL10n.i.aimAtQr,
                 textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.white, fontSize: 13, height: 1.6),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 13,
+                  height: 1.6,
+                ),
               ),
             ),
           ),

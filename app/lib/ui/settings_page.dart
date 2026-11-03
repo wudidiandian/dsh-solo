@@ -103,8 +103,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _section(
       _t('安装与配对', 'Install and pair'),
       _t(
-        '在 DeepSeek Harness 桌面版安装并启用 dsh-solo-agent。打开“手机配对”中的二维码页面，在本 App 的“设备连接”中扫码，或手动填写设备令牌。电脑和桌面插件需要保持运行。',
-        'Install and enable dsh-solo-agent in DeepSeek Harness. Open its Phone pairing QR page, then scan it under Device connection or enter the device token. Keep the desktop app and plugin running.',
+        '在 DeepSeek Harness 桌面版安装并启用 dsh-solo-agent。打开“手机配对”中的二维码页面，在本 App 的“设备连接”中扫码，或手动填写加密配对码。电脑和桌面插件需要保持运行。',
+        'Install and enable dsh-solo-agent in DeepSeek Harness. Open its Phone pairing QR page, then scan it under Device connection or paste the full encrypted pairing code. Keep the desktop app and plugin running.',
       ),
     ),
     _section(
@@ -117,7 +117,7 @@ class _SettingsPageState extends State<SettingsPage> {
     _section(
       _t('无法连接或工具不可用', 'Connection or tool problems'),
       _t(
-        '核对设备令牌，确认电脑插件在线；连上转发服务器并不代表已连上电脑。更新插件后完全退出并重启桌面版。工具跟随电脑端默认 Agent 预设；旧版创建的缺工具会话可另建一条会话测试。',
+        '核对加密配对码，确认电脑插件在线；连上转发服务器并不代表已连上电脑。更新插件后完全退出并重启桌面版。工具跟随电脑端默认 Agent 预设；旧版创建的缺工具会话可另建一条会话测试。',
         'Check the device token and desktop plugin. A relay connection alone does not confirm the desktop is online. Fully quit and restart the desktop after updating the plugin. Tools follow its default Agent preset; test a new session if an older session has missing tools.',
       ),
     ),
@@ -139,8 +139,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _section(
       _t('数据经过哪里', 'Where data travels'),
       _t(
-        '手机通过中转服务连接电脑插件。中转服务会处理连接 IP、设备令牌、会话消息及手机上传的附件。会话快照和部分事件可在服务端内存中暂存，用于重连恢复。任务内容由电脑端及其配置的模型服务处理。',
-        'The app connects to the desktop through a relay. The relay processes connection IPs, device tokens, session messages and attachments uploaded from the phone. Snapshots and some events can be buffered in server memory for reconnection. The desktop and its configured model services process task content.',
+        '手机与电脑插件建立端到端加密连接。中转服务可见连接 IP、连接令牌、时间与密文大小，但不持有解密密钥。会话、任务、审批及附件内容以密文转发；重连历史从电脑端重新加密后获取。任务内容仍由电脑端及其配置的模型服务处理。',
+        'The app establishes an end-to-end encrypted connection to the desktop plugin. The relay sees connection IPs, routing tokens, timing and ciphertext sizes, but has no decryption keys. Conversations, tasks, approvals and attachments are forwarded as ciphertext; reconnection history is re-encrypted by the desktop. The desktop and its configured model services still process task content.',
       ),
     ),
     _section(
@@ -153,8 +153,8 @@ class _SettingsPageState extends State<SettingsPage> {
     _section(
       _t('传输与本机保存', 'Transport and local storage'),
       _t(
-        'WSS 可加密客户端到服务器的传输链路，自建 WS 连接不提供该链路加密。目前尚未实现手机与电脑之间的端到端加密，中转服务能够读取转发内容。本机会保存配对配置、模型选择和部分会话缓存，请妥善保管设备及配对令牌。',
-        'WSS encrypts transport to the server; self-hosted WS connections do not provide this transport encryption. Phone-to-desktop end-to-end encryption is not implemented, so the relay can read forwarded content. Pairing settings, model selection and some session history are stored locally. Protect your device and pairing token.',
+        '扫码或完整加密配对码用于验证电脑身份，旧二维码与单独连接令牌不能建立加密连接。配对凭据使用系统安全存储，本地仍会保存部分会话缓存；端到端加密不等于本机会话缓存加密。公网仍应使用 WSS。请勿分享配对二维码或配对码，重置后所有手机需重新配对。',
+        'Scan the QR code or paste the complete encrypted pairing code to verify the desktop. Legacy QR codes and routing tokens alone cannot establish an encrypted connection. Pairing credentials use platform secure storage; some session history remains cached locally without application-level encryption. Continue using WSS for public deployments. Keep pairing credentials private; resetting them requires every phone to pair again.',
       ),
     ),
     _section(

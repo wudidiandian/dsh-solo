@@ -34,7 +34,7 @@ class AppL10n {
   // ---- 主页 ----
   String get appTitle => _t('DSH-SOLO 遥控器', 'DSH-SOLO Remote');
   String get connectSettings => _t('连接设置', 'Connection settings');
-  String get deviceTokenLabel => _t('设备令牌 deviceToken', 'Device token');
+  String get deviceTokenLabel => _t('加密配对码（扫码或粘贴）', 'Encrypted pairing code (scan or paste)');
   String get scanPair => _t('扫码配对', 'Scan pairing QR');
   String get saveAndConnect => _t('保存并连接', 'Save & connect');
   String get qrRecognized => _t('二维码已识别，点击「连接」保存', 'QR code recognized — tap "Connect" to save');
@@ -51,7 +51,7 @@ class AppL10n {
       _t('有 $n 项待审批', '$n pending approval${n > 1 ? 's' : ''}');
   String get tapToReview => _t('点击查看并处理', 'Tap to review');
   String get newSession => _t('新会话', 'New session');
-  String get desktopUnavailable => _t('未找到电脑插件，请核对设备令牌，并确认电脑端插件已启用', 'Desktop plugin unavailable. Check the device token and make sure the desktop plugin is enabled.');
+  String get desktopUnavailable => _t('暂时无法联系电脑，请检查电脑插件和网络连接', 'Desktop temporarily unreachable. Check the desktop plugin and network connection.');
   String get statusCheckingDesktop => _t('正在验证电脑', 'Verifying desktop');
   String get statusDesktopOffline => _t('电脑未连接', 'Desktop offline');
   String get statusOpen => _t('已连接', 'Connected');
@@ -60,8 +60,8 @@ class AppL10n {
   String get statusDisconnected => _t('已断开', 'Disconnected');
   String get statusIdle => _t('未连接', 'Offline');
   String get connectTitle => _t('连接到你的电脑', 'Connect to your PC');
-  String get connectHint => _t('服务器地址已内置，设备令牌请扫码或手输',
-      'Relay address is built in; scan the pairing QR or paste your token');
+  String get connectHint => _t('请扫描新版插件二维码，或粘贴完整加密配对码',
+      'Scan the updated plugin QR or paste the complete encrypted pairing code');
   String get connecting => _t('连接中…', 'Connecting…');
   String get connect => _t('连接', 'Connect');
   String authFailedDetail(Object err) => _t(

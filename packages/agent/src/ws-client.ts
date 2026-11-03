@@ -1,3 +1,4 @@
+import { acceptSecureHello, decodeKey, type SecureChannel, type SecureHello, type SecurePacket } from './e2ee.js'
 import { EventEmitter } from 'node:events'
 import http from 'node:http'
 import https from 'node:https'
@@ -17,6 +18,9 @@ export interface SoloRelayClientOptions {
   /** 预共享配对鉴权密钥 */
   deviceToken: string
   agentInfo?: string
+  encryptionKey?: string
+  /** Explicit legacy fixture support; production never enables this. */
+  allowUnencryptedForTests?: boolean
   /** 心跳间隔（默认 30s） */
   heartbeatIntervalMs?: number
   /** 发出 ping 后等待 pong 的最长时间（默认 10s） */
@@ -50,11 +54,36 @@ export class SoloRelayClient extends EventEmitter {
   private pongTimer: NodeJS.Timeout | null = null
   private disposed = false
   private stopped = false
+  private securePeers = new Map<string, { channel: SecureChannel; ready: boolean; lastSeen: number }>()
+  private latestSnapshot: Envelope | null = null
+  private clearSecurePeers(): void {
+    for (const peer of this.securePeers.values()) peer.channel.destroy()
+    this.securePeers.clear()
+  }
+  private wire(env: Envelope): void {
+    if (this.ws?.readyState !== WebSocket.OPEN) return
+    try { this.ws.send(JSON.stringify(env)) }
+    catch { try { this.ws.terminate() } catch { /* socket already gone */ } }
+  }
+  private sendSecure(env: Envelope): void {
+    if (env.type === 'agent.snapshot') this.latestSnapshot = env
+    for (const [id, peer] of this.securePeers) {
+      if (Date.now() - peer.lastSeen > 120_000) { this.wire({ v: 1, type: 'e2ee.close', peerId: id }); peer.channel.destroy(); this.securePeers.delete(id); continue }
+      if (!peer.ready || (env.peerId && env.peerId !== id)) continue
+      const inner = { ...env }; delete inner.peerId
+      try { this.wire({ v: 1, type: 'e2ee.data', peerId: id, payload: peer.channel.seal(inner) }) }
+      catch { this.wire({ v: 1, type: 'e2ee.close', peerId: id }); peer.channel.destroy(); this.securePeers.delete(id) }
+    }
+  }
 
   constructor(options: SoloRelayClientOptions) {
     super()
+    if (!options.encryptionKey && !options.allowUnencryptedForTests) throw new Error('End-to-end pairing key is required')
+    if (options.encryptionKey) decodeKey(options.encryptionKey)
     this.opts = {
       agentInfo: options.agentInfo,
+      encryptionKey: options.encryptionKey ?? '',
+      allowUnencryptedForTests: options.allowUnencryptedForTests ?? false,
       url: options.url,
       deviceToken: options.deviceToken,
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? 30_000,
@@ -85,12 +114,15 @@ export class SoloRelayClient extends EventEmitter {
     this.stopHeartbeat()
     this.retryTimer = null
     this.queue = []
+    this.clearSecurePeers()
+    this.latestSnapshot = null
     this.ws?.close()
   }
 
   /** 发送信封；未连接时进入离线队列 */
   send(env: Envelope): void {
     if (this.disposed) return
+    if (this.opts.encryptionKey) { this.sendSecure(env); return }
     const raw = JSON.stringify(env)
     if (this.state === 'open' && this.ws?.readyState === WebSocket.OPEN) {
       this.ws.send(raw)
@@ -116,8 +148,11 @@ export class SoloRelayClient extends EventEmitter {
    * 切换到新 token 并立即重连：hello 读取点在每次 connect() 内，
    * 因此只需更新 opts 后触发断开/重连，重连握手自然携带新 token。
    */
-  reconnectWithToken(token: string): void {
+  reconnectWithToken(token: string, encryptionKey?: string): void {
     if (this.disposed) return
+    if (encryptionKey) { decodeKey(encryptionKey); this.opts.encryptionKey = encryptionKey }
+    this.clearSecurePeers()
+    this.latestSnapshot = null
     this.opts.deviceToken = token
     if (this.stopped) {
       // 此前 hello.error 标记为致命停止；换 token 后重新允许连接
@@ -148,13 +183,14 @@ export class SoloRelayClient extends EventEmitter {
       }
       if (this.stopped || this.ws) return
       // handshakeTimeout：TLS/网络卡死时强制失败并清理，避免半开连接的滞留写逃逸成未捕获异常
-      const ws = new WebSocket(this.opts.url, { handshakeTimeout: 10_000 })
+      const ws = new WebSocket(this.opts.url, { handshakeTimeout: 10_000, maxPayload: 6 * 1024 * 1024 })
       this.ws = ws
 
       ws.on('open', () => {
         if (this.stopped || this.ws !== ws) { ws.close(); return }
         const hello = makeEnvelope<HelloAgentPayload>('hello.agent', {
           deviceToken: this.opts.deviceToken,
+          ...(this.opts.encryptionKey ? { e2ee: 1 } : {}),
           agentInfo: this.opts.agentInfo,
         })
         ws.send(JSON.stringify(hello))
@@ -233,8 +269,50 @@ export class SoloRelayClient extends EventEmitter {
       return
     }
 
+    if (!env || env.v !== 1 || typeof env.type !== 'string') return
+    if (this.opts.encryptionKey && env.type.startsWith('e2ee.')) {
+      const id = env.peerId
+      if (!id || !/^[0-9a-f]{32}$/.test(id)) return
+      try {
+        if (env.type === 'e2ee.close') {
+          this.securePeers.get(id)?.channel.destroy(); this.securePeers.delete(id); return
+        }
+        if (env.type === 'e2ee.hello') {
+          if (this.securePeers.has(id)) return
+          for (const [oldId, peer] of this.securePeers) if (Date.now() - peer.lastSeen > 120_000) { peer.channel.destroy(); this.securePeers.delete(oldId) }
+          if (this.securePeers.size >= 32) return
+          const hello = env.payload as SecureHello
+          if (hello.id !== id) return
+          const accepted = acceptSecureHello(this.opts.deviceToken, this.opts.encryptionKey, hello)
+          this.securePeers.set(id, { channel: accepted.channel, ready: false, lastSeen: Date.now() })
+          this.wire({ v: 1, type: 'e2ee.welcome', peerId: id, payload: accepted.welcome })
+        } else if (env.type === 'e2ee.data') {
+          const peer = this.securePeers.get(id)
+          if (!peer) return
+          const inner = peer.channel.open(env.payload as SecurePacket)
+          peer.lastSeen = Date.now()
+          if (!peer.ready) {
+            if (inner.type !== 'e2ee.ready') throw new Error('Missing key confirmation')
+            peer.ready = true
+            this.sendSecure({ v: 1, type: 'e2ee.ready', peerId: id })
+            if (this.latestSnapshot) this.sendSecure({ ...this.latestSnapshot, peerId: id })
+            this.emit('connected')
+          } else if (inner.type === 'cmd.dispatch') {
+            this.emit('command', { ...inner, peerId: id })
+          }
+        }
+      } catch {
+        this.securePeers.get(id)?.channel.destroy(); this.securePeers.delete(id)
+        this.wire({ v: 1, type: 'e2ee.close', peerId: id, payload: { reason: 'authentication-failed' } })
+      }
+      return
+    }
+    if (this.opts.encryptionKey && !['hello.ok', 'hello.error'].includes(env.type)) return
     switch (env.type) {
       case 'hello.ok':
+        if (this.opts.encryptionKey && (env.payload as any)?.e2ee !== 1) {
+          this.stopped = true; this.state = 'stopped'; this.emit('error', new Error('Relay upgrade required for end-to-end encryption')); this.ws?.close(); return
+        }
         this.state = 'open'
         this.retry = 0
         this.startHeartbeat()
@@ -278,6 +356,7 @@ export class SoloRelayClient extends EventEmitter {
   }
 
   private onDisconnect(reason: string): void {
+    this.clearSecurePeers()
     this.stopHeartbeat()
     const wasOpen = this.state === 'open'
     this.ws = null

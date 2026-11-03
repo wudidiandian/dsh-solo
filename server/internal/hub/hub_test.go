@@ -134,7 +134,7 @@ func waitFor(t *testing.T, timeout time.Duration, cond func() bool, what string)
 
 func TestRelayEndToEnd(t *testing.T) {
 	rec := newRecorder()
-	h := New(Config{PushAdapter: rec, PongWait: 2 * time.Second})
+	h := New(Config{AllowLegacy: true, PushAdapter: rec, PongWait: 2 * time.Second})
 	wsURL, stop := startServer(t, h)
 	defer stop()
 
@@ -206,8 +206,8 @@ func TestRelayEndToEnd(t *testing.T) {
 	mobile2 := dial(t, wsURL)
 	defer mobile2.Close()
 	sendPayload(t, mobile2, proto.TypeHelloMobile, proto.HelloMobilePayload{DeviceToken: tok})
-	recv(t, mobile2, 2*time.Second)                                              // hello.ok
-	recvUntil(t, mobile2, 2*time.Second, proto.TypeAgentSnapshot)                // 秒开快照
+	recv(t, mobile2, 2*time.Second)                               // hello.ok
+	recvUntil(t, mobile2, 2*time.Second, proto.TypeAgentSnapshot) // 秒开快照
 	sendPayload(t, mobile2, proto.TypeSyncRequest, proto.SyncRequestPayload{SessionID: sess, LastSeqID: 3})
 
 	env = recvUntil(t, mobile2, 2*time.Second, proto.TypeSyncCatchup)
@@ -271,7 +271,7 @@ func TestRelayEndToEnd(t *testing.T) {
 
 // TestCatchupGap 手机落后过多（事件已被环形缓冲淘汰）时必须置 gap=true。
 func TestCatchupGap(t *testing.T) {
-	h := New(Config{RingCapacity: 3, PongWait: 2 * time.Second})
+	h := New(Config{AllowLegacy: true, RingCapacity: 3, PongWait: 2 * time.Second})
 	wsURL, stop := startServer(t, h)
 	defer stop()
 
@@ -310,7 +310,7 @@ func TestCatchupGap(t *testing.T) {
 
 // TestHandshakeValidation 握手必须校验 token 与首报文类型。
 func TestHandshakeValidation(t *testing.T) {
-	h := New(Config{})
+	h := New(Config{AllowLegacy: true})
 	wsURL, stop := startServer(t, h)
 	defer stop()
 

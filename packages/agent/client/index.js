@@ -11,12 +11,12 @@ window.__ModuleLoader__.load({
     const dictionaries = {
       zh: {
         nav: '手机配对', title: '连接 DSH-SOLO 手机端',
-        description: '在手机 App 的“设备连接”中点击“扫码配对”，扫描下方二维码。',
+        description: '手机与电脑之间采用端到端加密。在 App 的“设备连接”中扫码，或粘贴完整加密配对码。',
         open: '在浏览器打开（备用）', checking: '正在获取配对信息…',
         ready: '云转发已连接', reconnecting: '云转发连接恢复中，请稍后刷新',
         failed: '无法获取配对信息。请确认插件已启用、宿主连接正常，然后重试。',
         forbidden: '只有此 DeepSeek Harness 的所有者可以查看配对信息。',
-        retry: '刷新配对信息', token: '设备令牌', show: '查看令牌', hide: '隐藏令牌',
+        retry: '刷新配对信息', token: '加密配对码', show: '查看配对码', hide: '隐藏配对码',
         reset: '重置令牌', resetting: '正在处理…',
         confirm: '重置后原配对令牌将失效，所有手机都需要重新扫码。确定重置吗？',
         privacy: '二维码包含设备访问凭证，请勿分享或公开。令牌重置后，手机需重新扫码配对。',
@@ -28,7 +28,7 @@ window.__ModuleLoader__.load({
         ready: 'Cloud relay connected', reconnecting: 'Reconnecting to the cloud relay. Refresh shortly.',
         failed: 'Cannot load pairing information. Check the plugin and Host connection, then retry.',
         forbidden: 'Only the owner of this DeepSeek Harness can view pairing information.',
-        retry: 'Refresh pairing information', token: 'Device token', show: 'Show token', hide: 'Hide token',
+        retry: 'Refresh pairing information', token: 'Encrypted pairing code', show: 'Show pairing code', hide: 'Hide pairing code',
         reset: 'Reset token', resetting: 'Working…',
         confirm: 'The old pairing token will stop working. Every phone must scan again. Reset the token?',
         privacy: 'The QR code contains device credentials. Keep it private. Pair again after resetting the token.',

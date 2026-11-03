@@ -299,7 +299,10 @@ class AppState extends ChangeNotifier {
       // "每块等 ack" 的自然节奏在低 RTT 网络（如 <256ms）下会超过 1MB/s——
       // 4MB burst 耗尽即被 relay 断开（表现为上传中途 "relay not connected"）。
       // 按 0.8MB/s 预节流（base64 膨胀 ~4/3 已计入），任何网络下不触达上限。
-      const uploadWireChunk = uploadChunkSize * 4 ~/ 3; // base64 后报文字节
+      // Encrypted packets add a second Base64 layer around the original chunk JSON.
+      final uploadWireChunk = c.encryptionKey == null
+          ? uploadChunkSize * 4 ~/ 3
+          : (uploadChunkSize * 16 ~/ 9) + 2048;
       const uploadRateBps = 800 * 1024;
       final startMs = DateTime.now().millisecondsSinceEpoch;
       for (var i = 0; i < chunks; i++) {
@@ -395,6 +398,14 @@ class AppState extends ChangeNotifier {
         list.sort((a, b) => (double.tryParse(b.updatedAt ?? '') ?? 0)
             .compareTo(double.tryParse(a.updatedAt ?? '') ?? 0));
         sessions = list;
+        final liveIds = list.map((s) => s.id).toSet();
+        _busySessions.removeWhere((id) => !liveIds.contains(id));
+        for (final raw in (p['sessions'] as List? ?? const [])) {
+          if (raw is! Map || raw['running'] is! bool) continue;
+          final id = (raw['id'] ?? raw['sessionId'] ?? '').toString();
+          if (raw['running'] == true) { _busySessions.add(id); }
+          else { _busySessions.remove(id); }
+        }
         dirTree = ((p['dirTree'] as List?) ?? []).map(DirNode.from).whereType<DirNode>().toList();
         break;
 
@@ -408,6 +419,7 @@ class AppState extends ChangeNotifier {
         if (sid.isEmpty) break;
         final kind = env.payloadMap['kind']?.toString() ?? '';
         if (kind == 'text-delta') {
+          _busySessions.add(sid);
           _streaming.putIfAbsent(sid, () => StringBuffer()).write(env.payloadMap['text']?.toString() ?? '');
         } else if (kind == 'end') {
           _streaming.remove(sid);
@@ -453,9 +465,9 @@ class AppState extends ChangeNotifier {
     // 审批已决（agent 侧回传的 resolved 事件，可选）
     final kind = env.payloadMap['kind'];
     // 回合运行状态：turn/start → 运行中；turn/end → 结束
-    if (kind == 'turn/start') {
+    if (kind == 'turn/start' || kind == 'turn.started') {
       _busySessions.add(sid);
-    } else if (kind == 'turn/end') {
+    } else if (kind == 'turn/end' || kind == 'turn.completed' || kind == 'turn.failed') {
       _busySessions.remove(sid);
       // 回合结束：流式增量清空（无论正常完成还是报错，durable 消息已定局）
       _streaming.remove(sid);
@@ -474,7 +486,7 @@ class AppState extends ChangeNotifier {
   void connect(RelayClient newClient) {
     final previous = client;
     final changedDevice = relayUrl != null &&
-        (relayUrl != newClient.url || deviceToken != newClient.deviceToken);
+        (relayUrl != newClient.url || deviceToken != newClient.deviceToken || previous?.encryptionKey != newClient.encryptionKey);
     client = newClient; // Invalidate old callbacks before stopping their socket.
     previous?.stop();
     _connectionEpoch++;

@@ -53,11 +53,12 @@
 
 1. 同步根目录 `package.json`、`packages/agent/package.json` 和 `app/pubspec.yaml` 的正式版本，并更新 lockfile。例如下一版统一为 `0.1.5`，App 使用 `0.1.5+6`；App 的构建号需递增。
 2. 提交并推送所有要发布的改动。进入运行仓库 **Actions → Release packages → Run workflow**，选择包含这些改动的分支。版本输入可留空，自动读取已提交的版本；填写时必须与源码版本一致。
-3. 工作流检查配置和版本，运行 TS / Go / Flutter 测试，构建官方插件与 **正式签名的 release APK**。
+3. 工作流检查配置和版本，运行 TS / Go / Flutter 测试，构建官方插件、**正式签名的 release APK** 与 Linux amd64 / arm64 中转二进制。
 4. 在当前源码仓库自动创建 `v<版本号>` tag，指向本次实际构建的源码提交，并将安装包发布到同一仓库的 Releases。
 5. 上传下列文件，检查上传文件名和大小后发布正式 Release，并设为 `latest`：
    - `dsh-solo-agent-<版本号>.tgz`
    - `dsh-solo.apk`
+   - `relay-linux-amd64`、`relay-linux-arm64`
    - `BUILD.json`（版本、App 构建号和源码提交）
    - `SHA256SUMS`（文件校验值）
 

@@ -29,6 +29,11 @@ class _SessionPageState extends State<SessionPage> {
   bool _sending = false;
   final TextEditingController _inputCtrl = TextEditingController();
   final ScrollController _scrollCtrl = ScrollController();
+  bool _followLatest = true;
+  String? _timelineRevision;
+  List<Envelope>? _timelineEvents;
+  List<Widget> _cachedBubbles = const [];
+  Map<String, Widget> _textWidgets = {};
 
   /// Session whose history has been (or is being) fetched, guards duplicate requests
   String? _historyLoadedFor;
@@ -47,6 +52,9 @@ class _SessionPageState extends State<SessionPage> {
       _activeSessionId = widget.sessionId;
       _selectedProject = null;
       _historyLoadedFor = null;
+      _followLatest = true;
+      _timelineRevision = null;
+      _textWidgets.clear();
       _loadHistory();
     }
   }
@@ -72,10 +80,10 @@ class _SessionPageState extends State<SessionPage> {
       // 1. Fast open from the local cache
       int? sinceSeqId;
       final cached = await loadSessionCache(sid);
-      if (!mounted) return;
+      if (!mounted || _activeSessionId != sid) return;
       if (cached != null && cached.events.isNotEmpty) {
         sinceSeqId = cached.lastSeqId;
-        widget.state.applyCached(sid, [
+        if (widget.state.eventsOf(sid).isEmpty) widget.state.applyCached(sid, [
           for (final raw in cached.events)
             Envelope(
               type: MsgType.sessionEvent,
@@ -85,6 +93,8 @@ class _SessionPageState extends State<SessionPage> {
             ),
         ]);
       }
+      // Never replace newer live messages with an older disk cache.
+      sinceSeqId = widget.state.lastSeq[sid] ?? sinceSeqId;
       // 2. Incremental (or full) fetch
       final resp = await widget.state.fetchHistory(sid, sinceSeqId: sinceSeqId);
       final p = resp.payloadMap;
@@ -101,7 +111,7 @@ class _SessionPageState extends State<SessionPage> {
               payload: Map<String, dynamic>.from(raw),
             ),
       ];
-      if (!mounted) return;
+      if (!mounted || _activeSessionId != sid) return;
       // 3. Merge into memory + persist cache
       await widget.state.applyHistory(sid, history);
     } catch (_) {
@@ -134,6 +144,8 @@ class _SessionPageState extends State<SessionPage> {
       if (newSid != null && newSid.isNotEmpty && newSid != _activeSessionId) {
         setState(() => _activeSessionId = newSid);
       }
+      setState(() => _followLatest = true);
+      _scrollToBottom();
     } catch (e) {
       if (mounted) _toast(AppL10n.i.sendError(e));
     } finally {
@@ -309,11 +321,27 @@ class _SessionPageState extends State<SessionPage> {
       ..showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
   }
 
-  void _scrollToBottom() {
+  void _scrollToBottom([int remainingLayouts = 5]) {
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scrollCtrl.hasClients) return;
+      if (!mounted || !_followLatest || !_scrollCtrl.hasClients) return;
       _scrollCtrl.jumpTo(_scrollCtrl.position.maxScrollExtent);
+      // Lazy list/Markdown heights can settle after the first layout. Follow
+      // the final extent for a few frames, always yielding to a user's scroll.
+      if (remainingLayouts > 0) {
+        _scrollToBottom(remainingLayouts - 1);
+        WidgetsBinding.instance.scheduleFrame();
+      }
     });
+  }
+
+  bool _onScroll(ScrollNotification notification) {
+    if (notification.depth == 0 &&
+        ((notification is ScrollUpdateNotification && notification.dragDetails != null) ||
+        notification is UserScrollNotification)) {
+      final follow = notification.metrics.extentAfter < 60;
+      if (_followLatest != follow) setState(() => _followLatest = follow);
+    }
+    return false;
   }
 
   @override
@@ -324,15 +352,21 @@ class _SessionPageState extends State<SessionPage> {
       builder: (context, _) {
         final sid = _activeSessionId;
         final events = sid == null ? const <Envelope>[] : state.eventsOf(sid);
-        _scrollToBottom();
+        final streaming = sid == null ? '' : state.streamingTextOf(sid);
+        final running = sid != null && state.isBusy(sid);
+        final revision = '$sid:${events.length}:${events.isEmpty ? 0 : events.last.seqId}:$running:$streaming';
+        if (_timelineRevision != revision || !identical(_timelineEvents, events)) {
+          _timelineRevision = revision;
+          _timelineEvents = events;
+          _cachedBubbles = _buildBubbles(events, streaming: streaming, turnRunning: running);
+          if (_followLatest) _scrollToBottom();
+        }
 
         final approvalsThis = state.approvals.values
             .where((a) => a.sessionId == sid && !a.resolved)
             .toList();
 
-        final bubbles = _buildBubbles(events,
-            streaming: sid == null ? '' : state.streamingTextOf(sid),
-            turnRunning: sid != null && state.isBusy(sid));
+        final bubbles = _cachedBubbles;
 
         final changes = sid == null ? const <ChangeEntry>[] : state.changesOf(sid);
 
@@ -380,21 +414,33 @@ class _SessionPageState extends State<SessionPage> {
                   ),
                 ),
               Expanded(
-                child: bubbles.isEmpty && approvalsThis.isEmpty
+                child: Stack(children: [Positioned.fill(child: bubbles.isEmpty && approvalsThis.isEmpty
                     ? Center(
                         child: Text(
                           sid == null ? AppL10n.i.firstTaskHint : AppL10n.i.noNewEvents,
                           style: const TextStyle(color: Colors.grey),
                         ),
                       )
-                    : ListView(
+                    : NotificationListener<ScrollNotification>(
+                      onNotification: _onScroll,
+                      child: ListView(
+                        key: PageStorageKey('conversation-$sid'),
                         controller: _scrollCtrl,
                         padding: const EdgeInsets.all(12),
                         children: [
                           for (final a in approvalsThis) _ApprovalCard(item: a, onRespond: _respond),
                           ...bubbles,
                         ],
-                      ),
+                      )),
+                  ),
+                  if (!_followLatest) Positioned(right: 12, bottom: 8,
+                    child: FilledButton.tonalIcon(
+                      key: const ValueKey('return-to-latest'),
+                      onPressed: () { setState(() => _followLatest = true); _scrollToBottom(); },
+                      icon: const Icon(Icons.arrow_downward, size: 16),
+                      label: Text(AppL10n.i.isEn ? 'Latest' : '回到最新'),
+                    )),
+                ]),
               ),
               SafeArea(
                 child: Padding(
@@ -463,10 +509,21 @@ class _SessionPageState extends State<SessionPage> {
     final widgets = <Widget>[];
     final textBuf = StringBuffer();
     final thoughtBuf = StringBuffer();
+    final details = <Widget>[];
+    String? detailId;
+    final nextTextWidgets = <String, Widget>{};
+    Widget textBubble(String text) => nextTextWidgets.putIfAbsent(text,
+        () => _textWidgets[text] ?? _TextBubble(text: text));
+    void flushDetails() {
+      if (details.isEmpty) return;
+      widgets.add(_ExecutionSteps(key: ValueKey('steps-$detailId'), storageId: '$detailId', steps: List.of(details)));
+      details.clear();
+      detailId = null;
+    }
 
     void flush() {
       if (textBuf.isNotEmpty) {
-        widgets.add(_TextBubble(text: textBuf.toString()));
+        widgets.add(textBubble(textBuf.toString()));
         textBuf.clear();
       }
       if (thoughtBuf.isNotEmpty) {
@@ -479,6 +536,11 @@ class _SessionPageState extends State<SessionPage> {
       final p = env.payloadMap;
       final kind = p['kind']?.toString() ?? '';
       final data = p['data'];
+      if (const ['user/message', 'assistant/message', 'text.delta', 'thought.delta',
+        'turn/end', 'turn.completed', 'turn.failed', 'approval_request', 'ask_user'].contains(kind)) {
+        flushDetails();
+      }
+      detailId ??= '${env.sessionId}:${env.seqId}';
       switch (kind) {
         // —— 宿主真实事件（dsh session/event，data 为事件载荷）——
         case 'user/message':
@@ -498,13 +560,13 @@ class _SessionPageState extends State<SessionPage> {
         case 'assistant/message':
           flush();
           final text = _messageText(data);
-          if (text != null) widgets.add(_TextBubble(text: text));
+          if (text != null) widgets.add(textBubble(text));
           break;
         case 'tool/call':
           flush();
           final d = data is Map ? data : const {};
           final name = d['name']?.toString() ?? '';
-          widgets.add(_ToolLine(
+          details.add(_ToolLine(
             icon: Icons.build,
             color: Colors.blueGrey,
             text: AppL10n.i.toolCall(name).trim(),
@@ -514,7 +576,7 @@ class _SessionPageState extends State<SessionPage> {
           flush();
           final d = data is Map ? data : const {};
           final failed = d['isError'] == true || d['error'] != null;
-          widgets.add(_ToolLine(
+          details.add(_ToolLine(
             icon: failed ? Icons.error_outline : Icons.subdirectory_arrow_right,
             color: failed ? Colors.red : Colors.grey,
             text: failed ? AppL10n.i.toolFailed : AppL10n.i.toolResult,
@@ -566,7 +628,7 @@ class _SessionPageState extends State<SessionPage> {
           break;
         case 'tool.started':
           flush();
-          widgets.add(_ToolLine(
+          details.add(_ToolLine(
             icon: Icons.build,
             color: Colors.blueGrey,
             text: AppL10n.i.toolStarted(
@@ -576,7 +638,7 @@ class _SessionPageState extends State<SessionPage> {
           break;
         case 'tool.completed':
           flush();
-          widgets.add(_ToolLine(icon: Icons.check_circle, color: Colors.green, text: AppL10n.i.toolCompletedLabel));
+          details.add(_ToolLine(icon: Icons.check_circle, color: Colors.green, text: AppL10n.i.toolCompletedLabel));
           break;
         case 'approval_request':
         case 'ask_user':
@@ -593,10 +655,12 @@ class _SessionPageState extends State<SessionPage> {
         default:
           // 未知事件：显示原始 kind（保持信息不丢）
           flush();
-          widgets.add(_ToolLine(icon: Icons.circle, color: Colors.grey, text: kind.isEmpty ? AppL10n.i.emptyEvent : kind));
+          details.add(_ToolLine(icon: Icons.circle, color: Colors.grey, text: kind.isEmpty ? AppL10n.i.emptyEvent : kind));
       }
     }
     flush();
+    flushDetails();
+    _textWidgets = nextTextWidgets;
     // 回合运行中：流式增量已到 → 打字机气泡；还在等首帧 → 等待指示。
     // （报错/完成的回合不会走到这里）
     if (turnRunning) {
@@ -637,6 +701,30 @@ class _SessionPageState extends State<SessionPage> {
       if (v is String) return v;
     }
     return '';
+  }
+}
+
+class _ExecutionSteps extends StatelessWidget {
+  const _ExecutionSteps({super.key, required this.storageId, required this.steps});
+  final String storageId;
+  final List<Widget> steps;
+  @override
+  Widget build(BuildContext context) {
+    final failed = steps.whereType<_ToolLine>().any((s) => s.color == Colors.red);
+    return ExpansionTile(
+      // ExpansionTile stores a bool; ScrollPosition stores a double. Give each
+      // group a distinct PageStorage namespace instead of sharing the list's.
+      key: PageStorageKey('execution-steps-$storageId'),
+      dense: true,
+      initiallyExpanded: false,
+      leading: Icon(failed ? Icons.error_outline : Icons.build_outlined, size: 18,
+          color: failed ? Colors.orange : Colors.blueGrey),
+      title: Text(AppL10n.i.isEn ? 'Steps (${steps.length})' : '执行步骤（${steps.length}）',
+          style: const TextStyle(fontSize: 13)),
+      subtitle: failed ? Text(AppL10n.i.isEn ? 'Some steps failed' : '部分步骤失败',
+          style: const TextStyle(fontSize: 12, color: Colors.orange)) : null,
+      children: steps,
+    );
   }
 }
 

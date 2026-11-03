@@ -4,9 +4,16 @@
   "title": "DSH-SOLO Envelope v1",
   "description": "DSH-SOLO 统一 JSON 报文信封。Go 端 (server/internal/proto) 与 Flutter 端模型必须与本 Schema 保持一致。",
   "type": "object",
-  "required": ["v", "type"],
+  "required": [
+    "v",
+    "type"
+  ],
   "properties": {
-    "v": { "type": "integer", "const": 1, "description": "协议版本" },
+    "v": {
+      "type": "integer",
+      "const": 1,
+      "description": "协议版本"
+    },
     "type": {
       "type": "string",
       "enum": [
@@ -19,16 +26,54 @@
         "sync.request",
         "sync.catchup",
         "cmd.dispatch",
-        "rpc.response"
+        "rpc.response",
+        "session.stream",
+        "e2ee.hello",
+        "e2ee.welcome",
+        "e2ee.data",
+        "e2ee.ready",
+        "e2ee.close"
       ]
     },
-    "reqId": { "type": "string", "description": "RPC 关联 ID" },
-    "sessionId": { "type": "string" },
-    "seqId": { "type": "integer", "minimum": 0, "description": "会话内严格单调递增序列号" },
-    "pushLevel": { "type": "string", "enum": ["none", "normal", "high"] },
-    "pushSummary": { "type": "string" },
-    "ts": { "type": "integer", "description": "毫秒时间戳" },
-    "payload": { "type": ["object", "array", "null"] }
+    "reqId": {
+      "type": "string",
+      "description": "RPC 关联 ID"
+    },
+    "sessionId": {
+      "type": "string"
+    },
+    "seqId": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "会话内严格单调递增序列号"
+    },
+    "pushLevel": {
+      "type": "string",
+      "enum": [
+        "none",
+        "normal",
+        "high"
+      ]
+    },
+    "pushSummary": {
+      "type": "string"
+    },
+    "ts": {
+      "type": "integer",
+      "description": "毫秒时间戳"
+    },
+    "payload": {
+      "type": [
+        "object",
+        "array",
+        "null"
+      ]
+    },
+    "peerId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$",
+      "description": "Opaque encrypted transport connection ID"
+    }
   },
   "additionalProperties": false
 }

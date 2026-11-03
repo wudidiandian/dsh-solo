@@ -15,6 +15,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"regexp"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -32,11 +33,11 @@ const (
 	defaultSendBuf      = 256
 	maxMessageSize      = 4 << 20 // 4MB，快照含目录树时可能较大
 
-	defaultMaxRooms       = 256 // 房间总数上限（防垃圾 token 刷房间）
-	defaultMaxConnPerIP   = 8   // 单 IP 并发连接上限
-	defaultMaxGlobalConns = 512 // 全局并发连接上限
-	defaultMsgRate        = 80  // 单连接每秒消息数
-	defaultMsgBurst       = 160 // 单连接消息突发桶容量
+	defaultMaxRooms       = 256   // 房间总数上限（防垃圾 token 刷房间）
+	defaultMaxConnPerIP   = 8     // 单 IP 并发连接上限
+	defaultMaxGlobalConns = 512   // 全局并发连接上限
+	defaultMsgRate        = 8000  // 单连接每秒 WebSocket 消息帧数（非聊天条数）
+	defaultMsgBurst       = 16000 // 单连接消息突发桶容量
 
 	defaultUploadRate    = 1 << 20  // 单连接上传字节速率：1MB/s（令牌桶补充速率）
 	defaultUploadBurst   = 4 << 20  // 上传字节突发桶容量：4MB（约一张压缩照片的瞬时额度）
@@ -45,6 +46,8 @@ const (
 
 // Config Hub 配置项（零值自动取默认）
 type Config struct {
+	// Explicit migration/test opt-in. New deployments reject unencrypted clients.
+	AllowLegacy  bool
 	PushAdapter  push.Adapter
 	RingCapacity int
 	WriteWait    time.Duration
@@ -60,7 +63,7 @@ type Config struct {
 	MsgBurst       int  // 单连接消息突发桶容量
 	TrustProxy     bool // 从 X-Forwarded-For/X-Real-IP 解析真实 IP（仅在可信反代后开启）
 
-	// 文件上传防护（2026-10-28）：仅约束 file.offer / file.chunk，其余消息不受影响
+	// mobile 上行字节防护：加密模式约束所有密文帧；旧协议约束文件上传。
 	UploadRate    int   // 单连接上传字节速率（字节/秒），负数 = 不限速
 	UploadBurst   int   // 上传字节突发桶容量（字节），负数 = 不限突发
 	MaxUploadSize int64 // 单文件大小上限（字节），负数 = 不限制
@@ -189,8 +192,10 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var (
-		role  string
-		token string
+		role     string
+		token    string
+		secure   bool
+		secureID string
 	)
 	switch env.Type {
 	case proto.TypeHelloAgent:
@@ -199,6 +204,11 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 			h.reject(conn, "invalid hello.agent payload")
 			return
 		}
+		if p.E2EE != 0 && p.E2EE != 1 {
+			h.reject(conn, "unsupported encryption version")
+			return
+		}
+		secure = p.E2EE == 1
 		role, token = proto.RoleAgent, p.DeviceToken
 	case proto.TypeHelloMobile:
 		var p proto.HelloMobilePayload
@@ -206,9 +216,24 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 			h.reject(conn, "invalid hello.mobile payload")
 			return
 		}
+		if p.E2EE != 0 && p.E2EE != 1 {
+			h.reject(conn, "unsupported encryption version")
+			return
+		}
+		secure = p.E2EE == 1
+		if secure && !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(p.SecureID) {
+			h.reject(conn, "invalid secure connection ID")
+			return
+		}
+		secureID = p.SecureID
 		role, token = proto.RoleMobile, p.DeviceToken
 	default:
 		h.reject(conn, "first message must be hello.agent / hello.mobile")
+		return
+	}
+
+	if !secure && !h.cfg.AllowLegacy {
+		h.reject(conn, "end-to-end encryption required; upgrade and pair again")
 		return
 	}
 
@@ -218,7 +243,11 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	okEnv := proto.Envelope{Type: proto.TypeHelloOK, Payload: mustJSON(proto.HelloOKPayload{Role: role})}
+	encryptionVersion := 0
+	if secure {
+		encryptionVersion = 1
+	}
+	okEnv := proto.Envelope{Type: proto.TypeHelloOK, Payload: mustJSON(proto.HelloOKPayload{Role: role, E2EE: encryptionVersion})}
 	okRaw, _ := proto.Encode(&okEnv)
 	if err := writeMessage(conn, okRaw, h.cfg.WriteWait); err != nil {
 		h.telemetry.count(func(c *Counters) { c.WriteErrors++ })
@@ -228,13 +257,15 @@ func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 
 	h.telemetry.sent(len(okRaw))
 	c := &client{
-		conn:    conn,
-		send:    make(chan []byte, h.cfg.SendBuf),
-		hub:     h,
-		role:    role,
-		token:   token,
-		ip:      ip,
-		limiter: newRateLimiter(h.cfg.MsgRate, h.cfg.MsgBurst),
+		conn:     conn,
+		send:     make(chan []byte, h.cfg.SendBuf),
+		hub:      h,
+		role:     role,
+		secure:   secure,
+		secureID: secureID,
+		token:    token,
+		ip:       ip,
+		limiter:  newRateLimiter(h.cfg.MsgRate, h.cfg.MsgBurst),
 		// 上传字节限流（仅 file.chunk 消耗；负数配置时 newRateLimiter 返回 nil = 不限流）
 		uploadLimiter: newRateLimiter(h.cfg.UploadRate, h.cfg.UploadBurst),
 	}
@@ -333,6 +364,8 @@ func (h *Hub) closeConn(conn *websocket.Conn) {
 // ---------------------------------------------------------------------------
 
 type client struct {
+	secure       bool
+	secureID     string
 	conn         *websocket.Conn
 	send         chan []byte
 	hub          *Hub

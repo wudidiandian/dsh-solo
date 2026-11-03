@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   relayStart: vi.fn(), relayStop: vi.fn(),
   pairingStart: vi.fn(), pairingStop: vi.fn(),
 }))
+vi.mock('../src/e2ee.js', () => ({ resolvePairingKey: async () => 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }))
 vi.mock('../src/token.js', () => ({ resolveDeviceToken: mocks.token }))
 vi.mock('node:fs/promises', () => ({ mkdir: vi.fn(async () => {}) }))
 vi.mock('../src/core.js', () => ({ AgentCore: class {
@@ -39,6 +40,22 @@ function context() {
     agentPresets: { resolve: vi.fn(async () => ({ id: 'desktop-default' })), mount: vi.fn(async () => {}) },
   } as unknown as Context
 }
+
+it('reads running state from desktop agent snapshots and listens for status changes', async () => {
+  mocks.token.mockResolvedValue('test-token')
+  const ctx = context() as any
+  ctx.agents = { list: () => [
+    { session: { header: { id: 'desktop-busy' } }, status: 'running' },
+    { session: { header: { id: 'desktop-idle' } }, status: 'idle' },
+  ] }
+  apply(ctx, { stateDir: '/test' })
+  await vi.waitFor(() => expect(mocks.relayStart).toHaveBeenCalledOnce())
+  expect(await mocks.options.services.listSessions()).toEqual(expect.arrayContaining([
+    expect.objectContaining({ id: 'desktop-busy', running: true }),
+    expect.objectContaining({ id: 'desktop-idle', running: false }),
+  ]))
+  expect(ctx.on).toHaveBeenCalledWith('agent/status', expect.any(Function))
+})
 
 it('registers resource cleanup with Cordis effects, without a dispose event', async () => {
   const ctx = context()

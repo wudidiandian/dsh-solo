@@ -178,7 +178,7 @@ journalctl -u relay -n 10 --no-pager
 看到 guard 参数行即新版已生效：
 
 ```
-[relay] guard: max-rooms=256 max-conn-per-ip=8 max-global-conns=512 msg-rate=80/s burst=160 trust-proxy=false
+[relay] guard: max-rooms=256 max-conn-per-ip=8 max-global-conns=512 msg-rate=8000/s burst=16000 trust-proxy=false
 ```
 
 此后设备接入日志会带来源 IP：`[WS] agent connected (token=dsh-solo-xxx... ip=x.x.x.x)`。

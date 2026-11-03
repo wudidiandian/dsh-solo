@@ -73,7 +73,7 @@ void main() {
 
     final relayProc = await Process.start(
       relayExe,
-      ['-addr', '127.0.0.1:$relayPort'],
+      ['--allow-legacy', '-addr', '127.0.0.1:$relayPort'],
     );
     var relayStderr = '';
     relayProc.stderr.transform(utf8.decoder).listen((d) {
@@ -113,7 +113,7 @@ void main() {
       })));
 
       // 3. 手机端（被测的 RelayClient）连接
-      final client = RelayClient(url: 'ws://127.0.0.1:$relayPort/ws', deviceToken: 'e2e-tok');
+      final client = RelayClient(allowUnencryptedForTests: true, url: 'ws://127.0.0.1:$relayPort/ws', deviceToken: 'e2e-tok');
       final snapshots = <Envelope>[];
       final events = <Envelope>[];
       client.onEnvelope = (env) {
@@ -186,7 +186,7 @@ void main() {
     );
     expect(build.exitCode, 0, reason: 'go build failed: ${build.stderr}');
 
-    final relayProc = await Process.start(relayExe, ['-addr', '127.0.0.1:$relayPort']);
+    final relayProc = await Process.start(relayExe, ['--allow-legacy', '-addr', '127.0.0.1:$relayPort']);
     var relayStderr = '';
     relayProc.stderr.transform(utf8.decoder).listen((d) => relayStderr += d);
 
@@ -250,7 +250,7 @@ void main() {
       await Future<void>.delayed(const Duration(milliseconds: 200));
 
       // 手机端用被测的 AppState 走真实上传路径
-      final state = AppState()..connect(RelayClient(url: 'ws://127.0.0.1:$relayPort/ws', deviceToken: 'e2e-up'));
+      final state = AppState()..connect(RelayClient(allowUnencryptedForTests: true, url: 'ws://127.0.0.1:$relayPort/ws', deviceToken: 'e2e-up'));
       await waitFor(() => state.relayStatus == RelayStatus.open);
 
       // ---- 场景 A：绕过 App 校验的超限 offer（模拟破解客户端）→ relay 硬拒绝 ----

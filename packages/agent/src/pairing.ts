@@ -1,3 +1,4 @@
+import { decodeKey } from './e2ee.js'
 // Local pairing page: a tiny HTTP server on 127.0.0.1 showing the relay URL,
 // the device token (masked by default), a QR code for the mobile app and a
 // reset button. Loopback-only; the relay itself stays stateless.
@@ -6,6 +7,7 @@ import QRCode from 'qrcode'
 
 export interface PairingServerOptions {
   /** Current device token provider */
+  getEncryptionKey?: () => string
   getToken: () => string
   /** Current relay URL provider */
   getRelayUrl: () => string
@@ -18,8 +20,13 @@ export interface PairingServerOptions {
 }
 
 /** URI encoded into the QR code; the mobile app scans it to auto-fill config */
-export function pairUri(relayUrl: string, token: string): string {
-  return `dshsolo://pair?relay=${encodeURIComponent(relayUrl)}&token=${encodeURIComponent(token)}`
+export function pairingCode(relayUrl: string, token: string, key: string): string {
+  decodeKey(key)
+  return 'dshpair1.' + Buffer.from(JSON.stringify({ relay: relayUrl, token, key }), 'utf8').toString('base64url')
+}
+export function pairUri(relayUrl: string, token: string, key?: string): string {
+  if (key) decodeKey(key)
+  return `dshsolo://pair?relay=${encodeURIComponent(relayUrl)}&token=${encodeURIComponent(token)}` + (key ? `&e2ee=1&key=${key}` : '')
 }
 
 /** Keep the dsh-solo- prefix, mask the rest */
@@ -92,7 +99,7 @@ function renderPage(relayUrl: string, masked: string, qrSvg: string): string {
   const masked = ${JSON.stringify(masked)};
   const I18N = {
     zh: {
-      title: '设备配对', tokenLabel: '设备令牌', show: '查看', hide: '隐藏',
+      title: '设备配对', tokenLabel: '加密配对码', show: '查看配对码', hide: '隐藏',
       reset: '重置令牌', resetConfirm: '重置后手机端需重新扫码配对，确定重置？',
       resetDone: '已重置，页面将刷新', resetFailed: '重置失败',
       tokenFetchFailed: '获取令牌失败',
@@ -100,7 +107,7 @@ function renderPage(relayUrl: string, masked: string, qrSvg: string): string {
       langBtn: 'EN', htmlLang: 'zh-CN',
     },
     en: {
-      title: 'Device Pairing', tokenLabel: 'Device token', show: 'Show', hide: 'Hide',
+      title: 'Device Pairing', tokenLabel: 'Encrypted pairing code', show: 'Show', hide: 'Hide',
       reset: 'Reset token', resetConfirm: 'The phone must re-scan after reset. Continue?',
       resetDone: 'Reset done — reloading', resetFailed: 'Reset failed',
       tokenFetchFailed: 'Failed to fetch token',
@@ -135,7 +142,7 @@ function renderPage(relayUrl: string, masked: string, qrSvg: string): string {
     try {
       const r = await fetch('/api/token');
       const j = await r.json();
-      full = j.token;
+      full = j.pairingCode ?? j.token;
       view.textContent = full;
       toggleBtn.textContent = I18N[lang].hide;
     } catch (e) { alert(I18N[lang].tokenFetchFailed); }
@@ -224,8 +231,19 @@ export class PairingServer {
         sendJson(res, { service: 'dsh-solo-pairing', url: this.address })
         return
       }
+      // Block DNS rebinding, cross-site credential reads and reset requests.
+      const allowedHosts = [`127.0.0.1:${this.port}`, `localhost:${this.port}`]
+      if (!allowedHosts.includes(req.headers.host ?? '') ||
+          (req.headers.origin && !allowedHosts.some(host => req.headers.origin === `http://${host}`)) ||
+          req.headers['sec-fetch-site'] === 'cross-site') {
+        sendJson(res, { error: 'forbidden' }, 403); return
+      }
+      res.setHeader('Cache-Control', 'no-store')
+      res.setHeader('Referrer-Policy', 'no-referrer')
+      res.setHeader('X-Content-Type-Options', 'nosniff')
+      res.setHeader('Content-Security-Policy', "default-src 'self'; img-src 'self' data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'")
       if (req.method === 'GET' && url === '/api/token') {
-        sendJson(res, { token: this.opts.getToken(), relayUrl: this.opts.getRelayUrl() })
+        sendJson(res, { token: this.opts.getToken(), relayUrl: this.opts.getRelayUrl(), ...(this.opts.getEncryptionKey ? { pairingCode: pairingCode(this.opts.getRelayUrl(), this.opts.getToken(), this.opts.getEncryptionKey()) } : {}) })
         return
       }
       if (req.method === 'POST' && url === '/api/reset') {
@@ -236,7 +254,7 @@ export class PairingServer {
       if (req.method === 'GET' && (url === '/' || url === '/index.html')) {
         const relayUrl = this.opts.getRelayUrl()
         const token = this.opts.getToken()
-        const qrSvg = await QRCode.toString(pairUri(relayUrl, token), {
+        const qrSvg = await QRCode.toString(pairUri(relayUrl, token, this.opts.getEncryptionKey?.()), {
           type: 'svg',
           margin: 1,
         })

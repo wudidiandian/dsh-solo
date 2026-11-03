@@ -130,7 +130,7 @@ func TestClientIPParsing(t *testing.T) {
 
 // TestRoomCapacityReject：房间满且无空房可淘汰时，新 token 握手必须被拒。
 func TestRoomCapacityReject(t *testing.T) {
-	h := New(Config{MaxRooms: 2, MaxConnPerIP: -1, PongWait: 2 * time.Second})
+	h := New(Config{AllowLegacy: true, MaxRooms: 2, MaxConnPerIP: -1, PongWait: 2 * time.Second})
 	wsURL, stop := startServer(t, h)
 	defer stop()
 
@@ -167,7 +167,7 @@ func TestRoomCapacityReject(t *testing.T) {
 
 // TestRoomCapacityEvictIdle：房间满时，新 token 连接应淘汰空置最久的空闲房间。
 func TestRoomCapacityEvictIdle(t *testing.T) {
-	h := New(Config{MaxRooms: 2, MaxConnPerIP: -1, PongWait: 2 * time.Second})
+	h := New(Config{AllowLegacy: true, MaxRooms: 2, MaxConnPerIP: -1, PongWait: 2 * time.Second})
 	wsURL, stop := startServer(t, h)
 	defer stop()
 

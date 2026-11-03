@@ -6,10 +6,11 @@ import 'config_store.dart';
 import 'defaults.dart';
 
 class AppConfig {
-  AppConfig({required this.relayUrl, required this.deviceToken, this.modelId});
+  AppConfig({required this.relayUrl, required this.deviceToken, this.modelId, this.encryptionKey});
 
   String relayUrl;
   String deviceToken;
+  String? encryptionKey;
 
   /// 手机端选中的模型 id（App 重启后恢复；空 = 用宿主默认模型）
   String? modelId;
@@ -28,6 +29,7 @@ class AppConfig {
             ? j['deviceToken'].toString()
             : '',
         modelId: j['modelId']?.toString(),
+        encryptionKey: j['encryptionKey']?.toString(),
       );
     } catch (_) {
       return null;
@@ -37,6 +39,7 @@ class AppConfig {
   Future<void> save() => saveConfigJson({
         'relayUrl': relayUrl,
         'deviceToken': deviceToken,
+        if (encryptionKey != null) 'encryptionKey': encryptionKey,
         if (modelId != null) 'modelId': modelId,
       });
 }

@@ -147,7 +147,7 @@ describe.skipIf(!goBin)('agent ↔ relay 跨语言端到端', () => {
     }
 
     // 2. 启动 relay
-    proc = spawn(relayBin, ['-addr', '127.0.0.1:18999'], { stdio: ['ignore', 'pipe', 'pipe'] })
+    proc = spawn(relayBin, ['--allow-legacy', '-addr', '127.0.0.1:18999'], { stdio: ['ignore', 'pipe', 'pipe'] })
     proc.stderr?.on('data', (d) => process.stderr.write(`[relay] ${d}`))
 
     // 3. 等 /healthz 就绪
@@ -169,7 +169,7 @@ describe.skipIf(!goBin)('agent ↔ relay 跨语言端到端', () => {
 
     // 5. 启动 agent（真实 SoloRelayClient + AgentCore）
     mock = makeMockServices()
-    const core = new AgentCore(client = new SoloRelayClient({
+    const core = new AgentCore(client = new SoloRelayClient({ allowUnencryptedForTests: true,
       url: RELAY_URL,
       deviceToken: 'e2e-tok',
       backoffBaseMs: 100,

@@ -123,3 +123,20 @@ describe('embedded pairing client', () => {
     model.stop()
   })
 })
+
+it('owner pairing bridge includes the independent key only in the local pairing QR/code', async () => {
+  const routes = new Map<string, any>()
+  const key = Buffer.alloc(32, 7).toString('base64url')
+  const dispose = registerPairingBridge({ fetch: { register: route => { routes.set(route.path, route); return () => {} } } }, {
+    getToken: () => 'test-token', getEncryptionKey: () => key, getRelayUrl: () => 'wss://example.invalid/ws',
+    getBrowserUrl: () => null, isConnected: () => true, isActive: () => true, resetToken: async () => 'test-token',
+  })
+  const method = 'dsh-solo-pairing/reveal'
+  const response = await routes.get('/api/' + method).fetch(new Request('https://host.invalid/api/' + method, {
+    method: 'POST', body: JSON.stringify({ type: 'client-request', rpcId: 'test', method, payload: {} }),
+  }))
+  const data = await response.json()
+  expect(data.result.value.token).toMatch(/^dshpair1\./)
+  expect(JSON.parse(Buffer.from(data.result.value.token.slice(9), 'base64url').toString()).key).toBe(key)
+  dispose()
+})

@@ -33,6 +33,8 @@
 
 日常 push 与 PR 运行检查，不自动发布安装包。发布使用 `.github/workflows/release.yml` 的 **Release packages → Run workflow**，不需要手动创建或推送 tag。
 
+需要先准备安装包、等待服务端升级时，取消勾选 `publish`：仍会完成测试、正式签名 APK、插件与后端构建并保存为工作流 artifacts，但不会创建 tag 或公开 Release。正式发布时勾选 `publish` 重跑。
+
 ### 首次配置
 
 将工作流和相关脚本提交并推送到运行仓库的默认分支，创建 GitHub `release` Environment，并配置以下 Secrets：

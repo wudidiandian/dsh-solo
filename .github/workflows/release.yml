@@ -6,6 +6,11 @@ on:
         description: '已提交的版本号，例如 0.1.5；留空读取 package.json'
         required: false
         type: string
+      publish:
+        description: '发布到 Releases；关闭时只构建并保存安装包，供服务端升级前准备'
+        required: true
+        default: true
+        type: boolean
 permissions:
   contents: read
 concurrency:
@@ -99,11 +104,17 @@ jobs:
           if-no-files-found: error
           retention-days: 14
       - name: Create matching tag and publish GitHub Release
+        if: ${{ inputs.publish }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/publish-release.mjs
       - name: Release links
+        if: ${{ inputs.publish }}
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
           printf '## Release\n\nhttps://github.com/%s/releases/tag/%s\n\nAndroid APK: https://github.com/%s/releases/latest/download/dsh-solo.apk\n' "$RELEASE_REPOSITORY" "$RELEASE_TAG" "$RELEASE_REPOSITORY" >> "$GITHUB_STEP_SUMMARY"
+      - name: Build-only delivery
+        if: ${{ !inputs.publish }}
+        run: |
+          printf '## Build complete\n\nSigned APK, plugin and Linux relay binaries are available in this run’s artifacts. No tag or public Release was created. After upgrading the relay, rerun with publish enabled.\n' >> "$GITHUB_STEP_SUMMARY"

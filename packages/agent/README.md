@@ -2,6 +2,12 @@
 
 用手机远程使用电脑上的 DeepSeek Harness：查看会话、发送任务、传递附件和响应审批。
 
+本插件需搭配 **DSH-SOLO App** 使用。
+
+[**下载 App 安装包（APK）**](https://github.com/wudidiandian/dsh-solo/releases/latest/download/dsh-solo.apk) · [**查看版本与更新说明**](https://github.com/wudidiandian/dsh-solo/releases)
+
+安装插件和 App 后，打开 DeepSeek Harness 左侧的「手机配对」，使用 App 扫码连接。使用期间，电脑需保持运行并联网。
+
 **官方安装包已内置官方云转发服务配置。普通用户无需部署服务器或填写域名，安装插件与 App 后扫码配对即可。**
 
 ## 安装

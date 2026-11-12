@@ -189,11 +189,17 @@ void main() {
       }, onDone: () => downstream.close());
     });
     final url = 'ws://127.0.0.1:${proxy.port}/ws';
-    final agent = await Process.start('node', [
-      '$root/scripts/test/e2ee-peer.mjs',
-      '--agent',
-      url,
-    ]);
+    final hostSdk = File(
+      '$root/.sdk/dsh/node_modules/@deepseek-ai/cordis/lib/index.js',
+    );
+    final agent = await Process.start(
+      'node',
+      ['$root/scripts/test/e2ee-peer.mjs', '--agent', url],
+      environment: {
+        if (hostSdk.existsSync())
+          'DSH_TEST_HOST_CORDIS': hostSdk.uri.toString(),
+      },
+    );
     final agentOutput = StreamIterator(
       agent.stdout.transform(utf8.decoder).transform(const LineSplitter()),
     );
@@ -252,16 +258,40 @@ void main() {
     expect(prompt.payloadMap['ok'], isTrue);
     final statuses = <RelayStatus>[];
     final oldStatus = first.client!.onStatus;
-    first.client!.onStatus = (status, detail) { statuses.add(status); oldStatus?.call(status, detail); };
+    first.client!.onStatus = (status, detail) {
+      statuses.add(status);
+      oldStatus?.call(status, detail);
+    };
     final beforeBurst = frames.length;
     agent.stdin.writeln('burst');
-    expect(await agentOutput.moveNext().timeout(const Duration(seconds: 10)), isTrue);
+    expect(
+      await agentOutput.moveNext().timeout(const Duration(seconds: 10)),
+      isTrue,
+    );
     expect(jsonDecode(agentOutput.current)['burstComplete'], isTrue);
-    await waitFor(() => first.eventsOf('created-session').any((e) => e.payloadMap['kind'] == 'turn/end'));
+    await waitFor(
+      () => first
+          .eventsOf('created-session')
+          .any((e) => e.payloadMap['kind'] == 'turn/end'),
+    );
     expect(first.streamingTextOf('created-session'), isEmpty);
-    expect(first.eventsOf('created-session').last.payloadMap['kind'], 'turn/end');
-    expect(first.eventsOf('created-session').where((e) => e.payloadMap['kind'] == 'assistant/message').last.payloadMap['text'], '字🚀' * 2000);
-    expect(statuses, isEmpty, reason: '2,000 host tokens must not interrupt the encrypted stream');
+    expect(
+      first.eventsOf('created-session').last.payloadMap['kind'],
+      'turn/end',
+    );
+    expect(
+      first
+          .eventsOf('created-session')
+          .where((e) => e.payloadMap['kind'] == 'assistant/message')
+          .last
+          .payloadMap['text'],
+      '字🚀' * 2000,
+    );
+    expect(
+      statuses,
+      isEmpty,
+      reason: '2,000 host tokens must not interrupt the encrypted stream',
+    );
     expect(frames.length - beforeBurst, lessThan(80));
     final fileBytes = Uint8List(6 * 1024 * 1024);
     final marker = utf8.encode('E2EE_FILE_SENTINEL');
@@ -283,6 +313,101 @@ void main() {
       timeout: const Duration(seconds: 15),
     );
     expect((await second.listProjects()).single.id, 'secret-project');
+    if (hostSdk.existsSync()) {
+      Future<Map> hostLine() async {
+        expect(
+          await agentOutput.moveNext().timeout(const Duration(seconds: 10)),
+          isTrue,
+          reason: errors.toString(),
+        );
+        return jsonDecode(agentOutput.current) as Map;
+      }
+
+      agent.stdin.writeln('approval-request');
+      expect((await hostLine())['interactionRequested'], isTrue);
+      await waitFor(
+        () => first.interactions.isNotEmpty && second.interactions.isNotEmpty,
+      );
+      final approvalId = first.interactions.keys.single;
+      // A fresh encrypted connection must recover the still-pending callback.
+      first.connect(
+        RelayClient(
+          url: url,
+          deviceToken: token,
+          encryptionKey: key,
+          baseBackoffMs: 50,
+        ),
+      );
+      await waitFor(
+        () =>
+            first.isDesktopConnected &&
+            first.interactions.containsKey(approvalId),
+      );
+      final recovered = phone();
+      await waitFor(
+        () =>
+            recovered.isDesktopConnected &&
+            recovered.interactions.containsKey(approvalId),
+      );
+      await recovered.respondInteraction(recovered.interactions[approvalId]!, {
+        'approved': true,
+      });
+      expect((await hostLine())['outcome'], 'allowed-once');
+      await waitFor(
+        () => first.interactions.isEmpty && second.interactions.isEmpty,
+      );
+      final stale = await first.client!.rpc('interaction.respond', {
+        'requestId': approvalId,
+        'response': {'approved': true},
+      }, sessionId: 'created-session');
+      expect(stale.payloadMap['ok'], false);
+
+      agent.stdin.writeln('question-request');
+      expect((await hostLine())['interactionRequested'], isTrue);
+      await waitFor(() => first.interactions.isNotEmpty);
+      final question = first.interactions.values.single;
+      await expectLater(
+        first.respondInteraction(question, {
+          'answers': [
+            {
+              'id': 'page',
+              'selected': ['Invalid option'],
+            },
+          ],
+        }),
+        throwsStateError,
+      );
+      expect(first.interactions.containsKey(question['id']), isTrue);
+      await first.respondInteraction(question, {
+        'answers': [
+          {
+            'id': 'page',
+            'selected': ['Game'],
+            'custom': 'snake',
+          },
+        ],
+      });
+      expect(((await hostLine())['outcome'] as Map)['answers'], [
+        {
+          'id': 'page',
+          'selected': ['Game'],
+          'custom': 'snake',
+        },
+      ]);
+      await waitFor(() => second.interactions.isEmpty);
+
+      agent.stdin.writeln('approval-request');
+      expect((await hostLine())['interactionRequested'], isTrue);
+      await waitFor(
+        () => first.interactions.isNotEmpty && second.interactions.isNotEmpty,
+      );
+      agent.stdin.writeln('desktop-reject');
+      expect((await hostLine())['outcome'], 'rejected');
+      await waitFor(
+        () => first.interactions.isEmpty && second.interactions.isEmpty,
+      );
+    }
+
     final wrong = phone(
       pairingKey: base64UrlEncode(List.filled(32, 8)).replaceAll('=', ''),
     );
@@ -291,7 +416,10 @@ void main() {
     expect(wrong.sessions, isEmpty);
     first.client!.stop();
     agent.stdin.writeln('offline-completion');
-    expect(await agentOutput.moveNext().timeout(const Duration(seconds: 10)), isTrue);
+    expect(
+      await agentOutput.moveNext().timeout(const Duration(seconds: 10)),
+      isTrue,
+    );
     expect(jsonDecode(agentOutput.current)['offlineComplete'], isTrue);
     first.client!.start();
     await waitFor(
@@ -302,8 +430,15 @@ void main() {
       (await first.fetchHistory('created-session')).payloadMap['ok'],
       isTrue,
     );
-    await waitFor(() => first.eventsOf('created-session').any((e) => e.payloadMap['text'] == 'OFFLINE_FINAL_SENTINEL'));
-    expect(first.eventsOf('created-session').last.payloadMap['kind'], 'turn/end');
+    await waitFor(
+      () => first
+          .eventsOf('created-session')
+          .any((e) => e.payloadMap['text'] == 'OFFLINE_FINAL_SENTINEL'),
+    );
+    expect(
+      first.eventsOf('created-session').last.payloadMap['kind'],
+      'turn/end',
+    );
     agent.stdin.writeln('rotate');
     expect(
       await agentOutput.moveNext().timeout(const Duration(seconds: 10)),
@@ -325,6 +460,8 @@ void main() {
     final visible = frames.join('\n');
     expect(visible, isNot(contains(rotated['key'])));
     for (final secret in [
+      'E2EE_APPROVAL_SENTINEL',
+      'E2EE_QUESTION_SENTINEL',
       'E2EE_CONTENT_SENTINEL',
       'E2EE_PROJECT_SENTINEL',
       'E2EE_PROMPT_SENTINEL',

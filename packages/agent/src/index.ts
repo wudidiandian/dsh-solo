@@ -5,7 +5,8 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
 import type { Context } from 'cordis'
-import { AgentCore, type HarnessServices } from './core.js'
+import { InteractionBroker } from './interactions.js'
+import { HOST_HISTORY_OFFSET, AgentCore, type HarnessServices } from './core.js'
 import { registerPairingBridge } from './pairing-bridge.js'
 import { PairingServer } from './pairing.js'
 import { resolveDeviceToken } from './token.js'
@@ -31,10 +32,11 @@ export interface Config {
 }
 
 /** 依赖的宿主服务（cordis 注入声明，缺失的按特性探测降级） */
-export const inject = ['sessions', 'llm', 'approval', 'agents', 'agentDefaultModel', 'workspaceRegistry', 'agentPresets', 'connection']
+export const inject = ['sessions', 'llm', 'approval', 'agents', 'agentDefaultModel', 'workspaceRegistry', 'agentPresets', 'connection', 'userQuestions', 'sessionQuery']
 
 /** Cordis 插件入口：把 Harness 上下文桥接到 AgentCore */
 export function apply(ctx: Context, config: Config) {
+  let interactions: InteractionBroker | null = null
   let core: AgentCore | null = null
   let client: SoloRelayClient | null = null
   let pairing: PairingServer | null = null
@@ -43,6 +45,7 @@ export function apply(ctx: Context, config: Config) {
   // Cordis owns effects; it does not emit a generic "dispose" event.
   ctx.effect(() => () => {
     lifetime.abort()
+    interactions?.dispose()
     core?.stop()
     client?.stop()
     pairing?.stop()
@@ -292,6 +295,13 @@ export function apply(ctx: Context, config: Config) {
       // 快照重报：已删会话立即从 relay 缓存移除（否则 App 重启后"死会话复活"）
       void core?.publishSnapshot()
     },
+    readHistory: async (id) => {
+      const snapshot = await anyCtx.sessionQuery.readSession(id)
+      return snapshot.events.map((event: any) => ({
+        kind: event.type, data: event.data, seq: event.seq,
+        seqId: HOST_HISTORY_OFFSET + event.seq + 1, historyEpoch: 'host-v1',
+      }))
+    },
     onSessionEvent: (cb) => {
       // 监听参数为 (session, event)；在插件 ctx 注册（跨上下文投递范围待真机验证）
       if (typeof anyCtx.on === 'function') {
@@ -308,19 +318,19 @@ export function apply(ctx: Context, config: Config) {
       }
       return () => {}
     },
-    registerApprovalHandler: (handler) => {
-      if (typeof anyCtx.approval?.registerHandler === 'function') {
-        anyCtx.approval.registerHandler(handler)
-      } else {
-        console.warn(
-          '[dsh-solo-agent] host approval API not found; 审批拦截未启用 / approval interception disabled (pending mapping of the real permission hook)',
-        )
-      }
-    },
+    // Real host requests are composed by InteractionBroker; keep the legacy
+    // core fixture hook inert instead of calling a nonexistent registerHandler.
+    registerApprovalHandler: () => {},
   }
 
     // 会话历史目录：<stateDir>/history；AgentCore 负责懒 mkdir 与落盘
+    interactions = new InteractionBroker({
+      changed: () => { void core?.publishSnapshot() },
+      mobileAvailable: () => relayClient.connectedMobileCount > 0,
+    })
+    interactions.install(anyCtx)
     core = new AgentCore(relayClient, {
+      interactions,
       services,
       historyDir,
       stateDir,

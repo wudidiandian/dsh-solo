@@ -1,5 +1,7 @@
 # DSH-SOLO
 
+> Release candidate **0.1.6-rc.1** includes history synchronization, scrolling performance, and mobile approval/question fixes. [Testing notes](docs/releases/v0.1.6-rc.1.md) · [Candidate APK](https://github.com/wudidiandian/dsh-solo/releases/download/v0.1.6-rc.1/dsh-solo.apk). Upgrade both the plugin and App; default installation still uses the stable release.
+
 [中文](README.md) | **English**
 
 Use DeepSeek Harness on your computer from an Android phone: follow sessions, send tasks, select models, transfer attachments and respond to approvals.

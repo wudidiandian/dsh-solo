@@ -4,6 +4,7 @@
 ///   sessionId 切换到真实会话。
 /// - 事件按 kind 分桶渲染，连续的 text.delta 合并为一个气泡。
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -12,6 +13,8 @@ import '../protocol/envelope.dart';
 import '../state/app_state.dart';
 import '../state/change_entry.dart';
 import '../state/session_cache.dart';
+import 'conversation_markdown.dart';
+import 'interaction_card.dart';
 
 class SessionPage extends StatefulWidget {
   const SessionPage({super.key, required this.state, this.sessionId});
@@ -30,13 +33,66 @@ class _SessionPageState extends State<SessionPage> {
   final TextEditingController _inputCtrl = TextEditingController();
   final ScrollController _scrollCtrl = ScrollController();
   bool _followLatest = true;
+  bool _pointerDown = false;
+  bool _scrollScheduled = false;
+  int _scrollEpoch = 0;
+  String? _lastStream;
+  bool? _lastRunning;
   String? _timelineRevision;
   List<Envelope>? _timelineEvents;
   List<Widget> _cachedBubbles = const [];
   Map<String, Widget> _textWidgets = {};
+  final _markdownCache = ConversationMarkdownCache();
+  static const _historyPageSize = 20;
+  int _visibleBubbleCount = _historyPageSize;
+  bool _loadingOlder = false;
+  bool _olderLoadArmed = true;
+  int _readerMotion = 0;
+  VoidCallback? _restoreOlderAnchor;
+  int _historyEpoch = 0;
+  List<Widget>? _readingHistory;
+  int? _readingThrough;
+  int? _readingHostThrough;
+  String? _readingEpoch;
+  List<Envelope>? _windowSource;
+  List<Envelope> _windowEvents = const [];
+  int? _windowCursor;
+  int _windowLength = -1;
+  int? _windowLast;
+  int? _windowHostThrough;
+  String? _windowEpoch;
+
+  List<Envelope> _historyWindow(List<Envelope> source) {
+    final cursor = _remoteHasMore ? _olderCursor : null;
+    final last = source.isEmpty ? null : source.last.seqId;
+    if (!identical(_windowSource, source) ||
+        _windowLength != source.length ||
+        _windowLast != last ||
+        _windowCursor != cursor) {
+      _windowSource = source;
+      _windowLength = source.length;
+      _windowLast = last;
+      final tail = source.isEmpty
+          ? const <String, dynamic>{}
+          : source.last.payloadMap;
+      _windowHostThrough = (tail['seq'] as num?)?.toInt();
+      _windowEpoch = tail['historyEpoch']?.toString();
+      _windowCursor = cursor;
+      _windowEvents = cursor == null
+          ? source
+          : source.where((e) => (e.seqId ?? 0) >= cursor).toList();
+    }
+    return _windowEvents;
+  }
+
+  String _readingStream = '';
+  bool _readingRunning = false;
 
   /// Session whose history has been (or is being) fetched, guards duplicate requests
   String? _historyLoadedFor;
+  bool _remoteHasMore = false;
+  int? _olderCursor;
+  String? _historyError;
 
   @override
   void initState() {
@@ -52,9 +108,19 @@ class _SessionPageState extends State<SessionPage> {
       _activeSessionId = widget.sessionId;
       _selectedProject = null;
       _historyLoadedFor = null;
+      _remoteHasMore = false;
+      _olderCursor = null;
+      _historyError = null;
       _followLatest = true;
       _timelineRevision = null;
       _textWidgets.clear();
+      _markdownCache.clear();
+      _visibleBubbleCount = _historyPageSize;
+      _loadingOlder = false;
+      _olderLoadArmed = true;
+      _historyEpoch++;
+      _restoreOlderAnchor = null;
+      _readingHistory = null;
       _loadHistory();
     }
   }
@@ -63,60 +129,109 @@ class _SessionPageState extends State<SessionPage> {
   void dispose() {
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
+    _markdownCache.clear();
+    _historyEpoch++;
+    _restoreOlderAnchor = null;
     super.dispose();
   }
 
-  /// Open a session in three steps (Trae-style: cache first, incremental sync):
-  /// 1. Render local cache instantly if present (fast open).
-  /// 2. Fetch session.history with sinceSeqId = cached lastSeqId (full fetch
-  ///    when no cache), so only new events travel through the relay.
-  /// 3. Merge via applyHistory (dedupe by seqId + persist updated cache).
-  /// Failure (offline / timeout) keeps the existing live event list untouched.
+  /// Cache is a fast preview, never evidence that a missing range is synchronized.
   Future<void> _loadHistory() async {
     final sid = _activeSessionId;
     if (sid == null || _historyLoadedFor == sid) return;
     _historyLoadedFor = sid;
     try {
-      // 1. Fast open from the local cache
-      int? sinceSeqId;
       final cached = await loadSessionCache(sid);
       if (!mounted || _activeSessionId != sid) return;
-      if (cached != null && cached.events.isNotEmpty) {
-        sinceSeqId = cached.lastSeqId;
-        if (widget.state.eventsOf(sid).isEmpty) widget.state.applyCached(sid, [
-          for (final raw in cached.events)
-            Envelope(
-              type: MsgType.sessionEvent,
-              sessionId: sid,
-              seqId: (raw['seqId'] as num?)?.toInt(),
-              payload: raw,
-            ),
+      if (cached != null) {
+        widget.state.applyCached(sid, _historyEnvelopes(sid, cached.events));
+      }
+      await _fetchHistoryPage(sid);
+    } catch (error) {
+      if (!mounted || _activeSessionId != sid) return;
+      setState(() {
+        _historyLoadedFor = null;
+        _historyError = AppL10n.i.isEn
+            ? 'History sync failed. Tap to retry.'
+            : '历史同步失败，点击重试';
+      });
+    }
+  }
+
+  List<Envelope> _historyEnvelopes(String sid, List rawEvents) => [
+    for (final raw in rawEvents)
+      if (raw is Map)
+        Envelope(
+          type: MsgType.sessionEvent,
+          sessionId: sid,
+          seqId: (raw['seqId'] as num?)?.toInt(),
+          payload: Map<String, dynamic>.from(raw),
+        ),
+  ];
+
+  Future<void> _fetchHistoryPage(String sid, {int? before}) async {
+    final response = await widget.state.fetchHistoryPage(
+      sid,
+      beforeSeqId: before,
+    );
+    final payload = response.payloadMap;
+    if (payload['ok'] != true) throw StateError('History unavailable');
+    final result = payload['result'];
+    if (result is! Map) throw StateError('Invalid history response');
+    final raw = result['events'] as List? ?? const [];
+    final history = _historyEnvelopes(sid, raw);
+    if (!mounted || _activeSessionId != sid) return;
+    // Only successful RPC pages advance the older-history cursor.
+    final cursor = (result['beforeSeqId'] as num?)?.toInt();
+    final more = result['hasMore'] == true;
+    if (more && (cursor == null || (before != null && cursor >= before))) {
+      throw StateError('History cursor did not advance');
+    }
+    final frozen = _readingHistory;
+    final migrated =
+        _readingEpoch != 'host-v1' &&
+        history.any((e) => e.payloadMap['historyEpoch'] == 'host-v1');
+    int? anchor = _readingThrough;
+    if (migrated) {
+      final first = history.first;
+      final hostSeq = (first.payloadMap['seq'] as num?)?.toInt();
+      anchor = _readingHostThrough == null || hostSeq == null
+          ? null
+          : first.seqId! - hostSeq + _readingHostThrough!;
+    }
+    final needsAnchor =
+        frozen != null &&
+        more &&
+        anchor != null &&
+        cursor != null &&
+        cursor > anchor;
+    await widget.state.applyHistory(sid, history);
+    if (!mounted || _activeSessionId != sid) return;
+    setState(() {
+      _remoteHasMore = more;
+      _olderCursor = cursor;
+      _historyError = null;
+      // Refresh a paused view after explicit history hydration, while preserving
+      // its existing tail. Incoming live messages still cannot move this view.
+      if (frozen != null && !needsAnchor) {
+        final records = widget.state.eventsOf(sid);
+        final migrated =
+            _readingEpoch != 'host-v1' &&
+            records.any((e) => e.payloadMap['historyEpoch'] == 'host-v1');
+        _readingHistory = _buildBubbles([
+          for (final e in records)
+            if ((!more || cursor == null || (e.seqId ?? 0) >= cursor) &&
+                (migrated
+                    ? (_readingHostThrough == null ||
+                          ((e.payloadMap['seq'] as num?)?.toInt() ?? 0) <=
+                              _readingHostThrough!)
+                    : (_readingThrough == null ||
+                          (e.seqId ?? 0) <= _readingThrough!)))
+              e,
         ]);
       }
-      // Never replace newer live messages with an older disk cache.
-      sinceSeqId = widget.state.lastSeq[sid] ?? sinceSeqId;
-      // 2. Incremental (or full) fetch
-      final resp = await widget.state.fetchHistory(sid, sinceSeqId: sinceSeqId);
-      final p = resp.payloadMap;
-      if (p['ok'] != true) return;
-      final result = p['result'];
-      final rawEvents = result is Map ? (result['events'] as List? ?? const []) : const [];
-      final history = <Envelope>[
-        for (final raw in rawEvents)
-          if (raw is Map)
-            Envelope(
-              type: MsgType.sessionEvent,
-              sessionId: sid,
-              seqId: (raw['seqId'] as num?)?.toInt(),
-              payload: Map<String, dynamic>.from(raw),
-            ),
-      ];
-      if (!mounted || _activeSessionId != sid) return;
-      // 3. Merge into memory + persist cache
-      await widget.state.applyHistory(sid, history);
-    } catch (_) {
-      // Keep live-only rendering when the history rpc fails
-    }
+    });
+    if (needsAnchor) await _fetchHistoryPage(sid, before: cursor);
   }
 
   /// 发送 prompt
@@ -129,8 +244,11 @@ class _SessionPageState extends State<SessionPage> {
         if (!await _pickProject()) return;
       }
       if (!mounted) return;
-      final resp = await widget.state.sendPrompt(text, sessionId: _activeSessionId,
-          projectId: _activeSessionId == null ? _selectedProject?.id : null);
+      final resp = await widget.state.sendPrompt(
+        text,
+        sessionId: _activeSessionId,
+        projectId: _activeSessionId == null ? _selectedProject?.id : null,
+      );
       if (!mounted) return;
       final p = resp.payloadMap;
       final ok = p['ok'] == true;
@@ -144,7 +262,14 @@ class _SessionPageState extends State<SessionPage> {
       if (newSid != null && newSid.isNotEmpty && newSid != _activeSessionId) {
         setState(() => _activeSessionId = newSid);
       }
-      setState(() => _followLatest = true);
+      setState(() {
+        _followLatest = true;
+        _readingHistory = null;
+        _visibleBubbleCount = _historyPageSize;
+        _historyEpoch++;
+        _loadingOlder = false;
+        _restoreOlderAnchor = null;
+      });
       _scrollToBottom();
     } catch (e) {
       if (mounted) _toast(AppL10n.i.sendError(e));
@@ -171,11 +296,16 @@ class _SessionPageState extends State<SessionPage> {
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
               child: Row(
                 children: [
-                  Text(AppL10n.i.addAttachment,
-                      style: Theme.of(ctx).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
+                  Text(
+                    AppL10n.i.addAttachment,
+                    style: Theme.of(ctx).textTheme.titleSmall
+                        ?.copyWith(fontWeight: FontWeight.bold),
+                  ),
                   const Spacer(),
-                  Text('${state.pendingAttachments.length}/${AppState.maxAttachmentsPerMessage}',
-                      style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                  Text(
+                    '${state.pendingAttachments.length}/${AppState.maxAttachmentsPerMessage}',
+                    style: const TextStyle(color: Colors.grey, fontSize: 12),
+                  ),
                 ],
               ),
             ),
@@ -198,7 +328,10 @@ class _SessionPageState extends State<SessionPage> {
               dense: true,
               leading: const Icon(Icons.folder_open),
               title: Text(AppL10n.i.selectProject),
-              subtitle: Text(AppL10n.i.selectProjectHint, style: const TextStyle(fontSize: 11)),
+              subtitle: Text(
+                AppL10n.i.selectProjectHint,
+                style: const TextStyle(fontSize: 11),
+              ),
               onTap: () => Navigator.pop(ctx, 'project'),
             ),
             ListTile(
@@ -206,7 +339,10 @@ class _SessionPageState extends State<SessionPage> {
               dense: true,
               leading: const Icon(Icons.link),
               title: Text(AppL10n.i.linkTitle),
-              subtitle: Text(AppL10n.i.linkSubtitle, style: const TextStyle(fontSize: 11)),
+              subtitle: Text(
+                AppL10n.i.linkSubtitle,
+                style: const TextStyle(fontSize: 11),
+              ),
               onTap: () => Navigator.pop(ctx, 'link'),
             ),
             const SizedBox(height: 8),
@@ -268,7 +404,10 @@ class _SessionPageState extends State<SessionPage> {
     final url = await showDialog<String>(
       context: context,
       builder: (ctx) => AlertDialog(
-        title: Text(AppL10n.i.linkDialogTitle, style: const TextStyle(fontSize: 16)),
+        title: Text(
+          AppL10n.i.linkDialogTitle,
+          style: const TextStyle(fontSize: 16),
+        ),
         content: TextField(
           controller: ctrl,
           autofocus: true,
@@ -280,8 +419,14 @@ class _SessionPageState extends State<SessionPage> {
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(AppL10n.i.cancel)),
-          FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: Text(AppL10n.i.add)),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(AppL10n.i.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: Text(AppL10n.i.add),
+          ),
         ],
       ),
     );
@@ -291,11 +436,13 @@ class _SessionPageState extends State<SessionPage> {
       return;
     }
     try {
-      widget.state.addAttachment(PendingAttachment(
-        kind: 'url',
-        name: url.replaceFirst(RegExp(r'^https?://'), '').split('/').last,
-        url: url,
-      ));
+      widget.state.addAttachment(
+        PendingAttachment(
+          kind: 'url',
+          name: url.replaceFirst(RegExp(r'^https?://'), '').split('/').last,
+          url: url,
+        ),
+      );
     } catch (e) {
       _toast('$e');
     }
@@ -306,9 +453,11 @@ class _SessionPageState extends State<SessionPage> {
     try {
       final resp = await widget.state.respondApproval(item, approved);
       final ok = resp.payloadMap['ok'] == true;
-      _toast(ok
-          ? AppL10n.i.approveOk(approved)
-          : AppL10n.i.approveFailed(resp.payloadMap['error']));
+      _toast(
+        ok
+            ? AppL10n.i.approveOk(approved)
+            : AppL10n.i.approveFailed(resp.payloadMap['error']),
+      );
     } catch (e) {
       _toast(AppL10n.i.approveError(e));
     }
@@ -318,15 +467,33 @@ class _SessionPageState extends State<SessionPage> {
     if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
+      ..showSnackBar(
+        SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+      );
   }
 
   void _scrollToBottom([int remainingLayouts = 5]) {
+    if (_scrollScheduled || !_followLatest || _pointerDown) return;
+    _scrollScheduled = true;
+    final epoch = _scrollEpoch;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_followLatest || !_scrollCtrl.hasClients) return;
-      _scrollCtrl.jumpTo(_scrollCtrl.position.maxScrollExtent);
-      // Lazy list/Markdown heights can settle after the first layout. Follow
-      // the final extent for a few frames, always yielding to a user's scroll.
+      _scrollScheduled = false;
+      if (epoch != _scrollEpoch) {
+        if (mounted && _followLatest && !_pointerDown) _scrollToBottom();
+        return;
+      }
+      if (!mounted ||
+          !_followLatest ||
+          _pointerDown ||
+          !_scrollCtrl.hasClients ||
+          _scrollCtrl.position.isScrollingNotifier.value) {
+        return;
+      }
+      final position = _scrollCtrl.position;
+      if ((position.minScrollExtent - position.pixels).abs() > 0.5) {
+        _scrollCtrl.jumpTo(position.minScrollExtent);
+      }
+      // Coalesce updates; never let queued layout corrections override a drag.
       if (remainingLayouts > 0) {
         _scrollToBottom(remainingLayouts - 1);
         WidgetsBinding.instance.scheduleFrame();
@@ -334,14 +501,135 @@ class _SessionPageState extends State<SessionPage> {
     });
   }
 
+  void _pauseFollowing() {
+    _scrollEpoch++;
+    if (_followLatest) {
+      setState(() {
+        // Keep the inspected timeline stable while new output arrives below it.
+        _readingHistory = List.of(_cachedBubbles);
+        final existing = widget.state.eventsOf(_activeSessionId ?? '');
+        _readingThrough = existing.isEmpty ? null : existing.last.seqId;
+        _readingHostThrough = _windowHostThrough;
+        _readingEpoch = _windowEpoch;
+        _readingStream = _lastStream ?? '';
+        _readingRunning = _lastRunning ?? false;
+        _followLatest = false;
+      });
+    }
+  }
+
+  void _resumeFollowingIfAtBottom() {
+    if (_pointerDown ||
+        !_scrollCtrl.hasClients ||
+        _scrollCtrl.position.isScrollingNotifier.value) {
+      return;
+    }
+    final follow = _scrollCtrl.position.extentBefore < 60;
+    if (_followLatest != follow) {
+      setState(() {
+        _followLatest = follow;
+        if (follow) _readingHistory = null;
+      });
+    }
+  }
+
   bool _onScroll(ScrollNotification notification) {
-    if (notification.depth == 0 &&
-        ((notification is ScrollUpdateNotification && notification.dragDetails != null) ||
-        notification is UserScrollNotification)) {
-      final follow = notification.metrics.extentAfter < 60;
-      if (_followLatest != follow) setState(() => _followLatest = follow);
+    if (notification.depth != 0) return false;
+    if (notification is ScrollStartNotification &&
+        notification.dragDetails != null) {
+      _olderLoadArmed = true;
+      _pauseFollowing();
+    } else if (notification is ScrollEndNotification) {
+      _restoreOlderAnchor?.call();
+      _resumeFollowingIfAtBottom();
+    }
+    if (notification is ScrollUpdateNotification &&
+        notification.dragDetails != null) {
+      _readerMotion++;
+    }
+    if (notification is ScrollUpdateNotification &&
+        notification.dragDetails != null &&
+        notification.metrics.extentAfter > 240) {
+      _olderLoadArmed = true;
+    }
+    if (notification is ScrollUpdateNotification &&
+        _olderLoadArmed &&
+        notification.metrics.extentAfter < 160) {
+      _loadOlderMessages();
     }
     return false;
+  }
+
+  Future<void> _loadOlderMessages() async {
+    var history = _readingHistory ?? _cachedBubbles;
+    if (_loadingOlder) return;
+    if (_visibleBubbleCount >= history.length && _remoteHasMore) {
+      final sid = _activeSessionId;
+      if (sid == null) return;
+      setState(() => _loadingOlder = true);
+      try {
+        await _fetchHistoryPage(sid, before: _olderCursor);
+      } catch (_) {
+        if (mounted && sid == _activeSessionId)
+          setState(() {
+            _historyError = AppL10n.i.isEn
+                ? 'History sync failed. Tap to retry.'
+                : '历史同步失败，点击重试';
+          });
+      } finally {
+        if (mounted && sid == _activeSessionId)
+          setState(() => _loadingOlder = false);
+      }
+      if (!mounted || sid != _activeSessionId) return;
+      history =
+          _readingHistory ??
+          _buildBubbles(_historyWindow(widget.state.eventsOf(sid)));
+    }
+    if (_visibleBubbleCount >= history.length) return;
+    _olderLoadArmed = false;
+    final epoch = _historyEpoch;
+    final motion = _readerMotion;
+    final anchorOffset = _scrollCtrl.hasClients ? _scrollCtrl.offset : null;
+    final end = history.length - _visibleBubbleCount;
+    final start = (end - _historyPageSize).clamp(0, end);
+    final older = history.sublist(start, end);
+    setState(() => _loadingOlder = true);
+    // Let the loading indicator paint before parsing the next local page.
+    await WidgetsBinding.instance.endOfFrame;
+    for (final bubble in older.reversed) {
+      if (!mounted || epoch != _historyEpoch) return;
+      if (bubble is _TextBubble) await _markdownCache.document(bubble.text);
+      await Future<void>.delayed(Duration.zero);
+    }
+    if (!mounted || epoch != _historyEpoch) return;
+    setState(() {
+      _visibleBubbleCount += older.length;
+      _loadingOlder = false;
+    });
+    _restoreOlderAnchor = () {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted ||
+            epoch != _historyEpoch ||
+            motion != _readerMotion ||
+            _pointerDown ||
+            !_scrollCtrl.hasClients ||
+            anchorOffset == null) {
+          _restoreOlderAnchor = null;
+          return;
+        }
+        // Never interrupt an active drag/fling. Retry at its natural end.
+        if (_scrollCtrl.position.isScrollingNotifier.value) return;
+        _restoreOlderAnchor = null;
+        final position = _scrollCtrl.position;
+        _scrollCtrl.jumpTo(
+          anchorOffset.clamp(
+            position.minScrollExtent,
+            position.maxScrollExtent,
+          ),
+        );
+      });
+    };
+    _restoreOlderAnchor!();
   }
 
   @override
@@ -351,29 +639,72 @@ class _SessionPageState extends State<SessionPage> {
       listenable: state,
       builder: (context, _) {
         final sid = _activeSessionId;
-        final events = sid == null ? const <Envelope>[] : state.eventsOf(sid);
+        final events = _historyWindow(
+          sid == null ? const <Envelope>[] : state.eventsOf(sid),
+        );
         final streaming = sid == null ? '' : state.streamingTextOf(sid);
         final running = sid != null && state.isBusy(sid);
-        final revision = '$sid:${events.length}:${events.isEmpty ? 0 : events.last.seqId}:$running:$streaming';
-        if (_timelineRevision != revision || !identical(_timelineEvents, events)) {
+        final revision =
+            '$sid:${events.length}:${events.isEmpty ? 0 : events.last.seqId}';
+        if (_timelineRevision != revision ||
+            !identical(_timelineEvents, events)) {
           _timelineRevision = revision;
           _timelineEvents = events;
-          _cachedBubbles = _buildBubbles(events, streaming: streaming, turnRunning: running);
+          final oldCount = _cachedBubbles.length;
+          _cachedBubbles = _buildBubbles(events);
+          if (_followLatest) {
+            _visibleBubbleCount = _historyPageSize;
+          } else if (_readingHistory == null &&
+              oldCount > 0 &&
+              _cachedBubbles.length > oldCount) {
+            _visibleBubbleCount += _cachedBubbles.length - oldCount;
+          }
+          if (_followLatest) _scrollToBottom();
+        }
+        if (_lastStream != streaming || _lastRunning != running) {
+          _lastStream = streaming;
+          _lastRunning = running;
           if (_followLatest) _scrollToBottom();
         }
 
+        final pendingInteractions = state.interactions.values
+            .where((r) => r['sessionId'] == sid)
+            .toList();
         final approvalsThis = state.approvals.values
             .where((a) => a.sessionId == sid && !a.resolved)
             .toList();
 
-        final bubbles = _cachedBubbles;
+        // Incoming messages do not shift a paused, reverse-scrolling viewport.
+        final history = _readingHistory ?? _cachedBubbles;
+        final visibleStream = _readingHistory == null
+            ? streaming
+            : _readingStream;
+        final visibleRunning = _readingHistory == null
+            ? running
+            : _readingRunning;
+        final bubbles = [
+          ...history.skip(
+            (history.length - _visibleBubbleCount).clamp(0, history.length),
+          ),
+          if (visibleStream.isNotEmpty)
+            _StreamingBubble(text: visibleStream, running: visibleRunning),
+          if (visibleStream.isEmpty &&
+              visibleRunning &&
+              pendingInteractions.isEmpty &&
+              approvalsThis.isEmpty)
+            const _ThinkingLine(),
+        ];
 
-        final changes = sid == null ? const <ChangeEntry>[] : state.changesOf(sid);
+        final changes = sid == null
+            ? const <ChangeEntry>[]
+            : state.changesOf(sid);
 
         return Scaffold(
           appBar: AppBar(
-            title: Text(AppL10n.i.sessionTitle(sid),
-                style: const TextStyle(fontSize: 16)),
+            title: Text(
+              AppL10n.i.sessionTitle(sid),
+              style: const TextStyle(fontSize: 16),
+            ),
             actions: [
               if (changes.isNotEmpty)
                 IconButton(
@@ -399,14 +730,25 @@ class _SessionPageState extends State<SessionPage> {
                     title: Text(AppL10n.i.desktopUnavailable),
                   ),
                 ),
+              if (_historyError != null)
+                TextButton.icon(
+                  key: const ValueKey('retry-history-sync'),
+                  onPressed: _historyLoadedFor == null
+                      ? _loadHistory
+                      : _loadOlderMessages,
+                  icon: const Icon(Icons.refresh),
+                  label: Text(_historyError!),
+                ),
               if (state.gapSessions.contains(sid))
                 Material(
                   color: Colors.blueGrey.shade50,
                   child: ListTile(
                     dense: true,
                     leading: const Icon(Icons.info_outline),
-                    title: Text(AppL10n.i.gapBanner,
-                        style: const TextStyle(fontSize: 13)),
+                    title: Text(
+                      AppL10n.i.gapBanner,
+                      style: const TextStyle(fontSize: 13),
+                    ),
                     trailing: TextButton(
                       onPressed: () => state.clearGap(sid!),
                       child: Text(AppL10n.i.gotIt),
@@ -414,34 +756,148 @@ class _SessionPageState extends State<SessionPage> {
                   ),
                 ),
               Expanded(
-                child: Stack(children: [Positioned.fill(child: bubbles.isEmpty && approvalsThis.isEmpty
-                    ? Center(
-                        child: Text(
-                          sid == null ? AppL10n.i.firstTaskHint : AppL10n.i.noNewEvents,
-                          style: const TextStyle(color: Colors.grey),
+                child: Stack(
+                  children: [
+                    Positioned.fill(
+                      child: bubbles.isEmpty && approvalsThis.isEmpty
+                          ? Center(
+                              child: Text(
+                                sid == null
+                                    ? AppL10n.i.firstTaskHint
+                                    : AppL10n.i.noNewEvents,
+                                style: const TextStyle(color: Colors.grey),
+                              ),
+                            )
+                          : NotificationListener<ScrollNotification>(
+                              onNotification: _onScroll,
+                              child: Listener(
+                                onPointerDown: (_) {
+                                  _pointerDown = true;
+                                  _pauseFollowing();
+                                },
+                                onPointerUp: (_) {
+                                  _pointerDown = false;
+                                  _resumeFollowingIfAtBottom();
+                                },
+                                onPointerCancel: (_) {
+                                  _pointerDown = false;
+                                  _resumeFollowingIfAtBottom();
+                                },
+                                child: ListView.builder(
+                                  reverse: true,
+                                  scrollCacheExtent:
+                                      const ScrollCacheExtent.pixels(400),
+                                  key: PageStorageKey('conversation-$sid'),
+                                  controller: _scrollCtrl,
+                                  padding: const EdgeInsets.all(12),
+                                  itemCount:
+                                      bubbles.length +
+                                      approvalsThis.length +
+                                      (_visibleBubbleCount < history.length ||
+                                              _remoteHasMore ||
+                                              _historyError != null
+                                          ? 1
+                                          : 0),
+                                  itemBuilder: (context, index) {
+                                    if (index < approvalsThis.length) {
+                                      return _ApprovalCard(
+                                        item: approvalsThis[index],
+                                        onRespond: _respond,
+                                      );
+                                    }
+                                    final messageIndex =
+                                        index - approvalsThis.length;
+                                    if (messageIndex < bubbles.length) {
+                                      return bubbles[bubbles.length -
+                                          1 -
+                                          messageIndex];
+                                    }
+                                    return Center(
+                                      child: _loadingOlder
+                                          ? const Padding(
+                                              padding: EdgeInsets.all(16),
+                                              child: SizedBox.square(
+                                                key: ValueKey(
+                                                  'older-history-loading',
+                                                ),
+                                                dimension: 20,
+                                                child:
+                                                    CircularProgressIndicator(
+                                                      strokeWidth: 2,
+                                                    ),
+                                              ),
+                                            )
+                                          : TextButton(
+                                              key: const ValueKey(
+                                                'load-older-history',
+                                              ),
+                                              onPressed:
+                                                  _historyError != null &&
+                                                      _historyLoadedFor == null
+                                                  ? _loadHistory
+                                                  : _loadOlderMessages,
+                                              child: Text(
+                                                _historyError ??
+                                                    (AppL10n.i.isEn
+                                                        ? 'Load earlier messages'
+                                                        : '加载更早消息'),
+                                              ),
+                                            ),
+                                    );
+                                  },
+                                ),
+                              ),
+                            ),
+                    ),
+                    if (!_followLatest)
+                      Positioned(
+                        right: 12,
+                        bottom: 8,
+                        child: FilledButton.tonalIcon(
+                          key: const ValueKey('return-to-latest'),
+                          onPressed: () {
+                            setState(() {
+                              _followLatest = true;
+                              _readingHistory = null;
+                              _visibleBubbleCount = _historyPageSize;
+                              _historyEpoch++;
+                              _loadingOlder = false;
+                              _restoreOlderAnchor = null;
+                            });
+                            _scrollToBottom();
+                          },
+                          icon: const Icon(Icons.arrow_downward, size: 16),
+                          label: Text(AppL10n.i.isEn ? 'Latest' : '回到最新'),
                         ),
-                      )
-                    : NotificationListener<ScrollNotification>(
-                      onNotification: _onScroll,
-                      child: ListView(
-                        key: PageStorageKey('conversation-$sid'),
-                        controller: _scrollCtrl,
-                        padding: const EdgeInsets.all(12),
-                        children: [
-                          for (final a in approvalsThis) _ApprovalCard(item: a, onRespond: _respond),
-                          ...bubbles,
-                        ],
-                      )),
-                  ),
-                  if (!_followLatest) Positioned(right: 12, bottom: 8,
-                    child: FilledButton.tonalIcon(
-                      key: const ValueKey('return-to-latest'),
-                      onPressed: () { setState(() => _followLatest = true); _scrollToBottom(); },
-                      icon: const Icon(Icons.arrow_downward, size: 16),
-                      label: Text(AppL10n.i.isEn ? 'Latest' : '回到最新'),
-                    )),
-                ]),
+                      ),
+                  ],
+                ),
               ),
+              if (pendingInteractions.isNotEmpty)
+                ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxHeight:
+                        (MediaQuery.sizeOf(context).height -
+                            MediaQuery.viewInsetsOf(context).bottom -
+                            kToolbarHeight -
+                            MediaQuery.paddingOf(context).top) *
+                        0.40,
+                  ),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        for (final request in pendingInteractions)
+                          InteractionCard(
+                            key: ValueKey(request['id']),
+                            request: request,
+                            onRespond: (response) =>
+                                state.respondInteraction(request, response),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
               SafeArea(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
@@ -479,8 +935,10 @@ class _SessionPageState extends State<SessionPage> {
                                 hintText: AppL10n.i.taskHint,
                                 border: const OutlineInputBorder(),
                                 isDense: true,
-                                contentPadding:
-                                    const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                  vertical: 10,
+                                ),
                               ),
                             ),
                           ),
@@ -504,19 +962,27 @@ class _SessionPageState extends State<SessionPage> {
   }
 
   /// 把事件流折叠成展示气泡（连续 text.delta 合并）
-  List<Widget> _buildBubbles(List<Envelope> events,
-      {String streaming = '', bool turnRunning = false}) {
+  List<Widget> _buildBubbles(List<Envelope> events) {
     final widgets = <Widget>[];
     final textBuf = StringBuffer();
     final thoughtBuf = StringBuffer();
     final details = <Widget>[];
     String? detailId;
     final nextTextWidgets = <String, Widget>{};
-    Widget textBubble(String text) => nextTextWidgets.putIfAbsent(text,
-        () => _textWidgets[text] ?? _TextBubble(text: text));
+    Widget textBubble(String text) => nextTextWidgets.putIfAbsent(
+      text,
+      () =>
+          _textWidgets[text] ?? _TextBubble(text: text, cache: _markdownCache),
+    );
     void flushDetails() {
       if (details.isEmpty) return;
-      widgets.add(_ExecutionSteps(key: ValueKey('steps-$detailId'), storageId: '$detailId', steps: List.of(details)));
+      widgets.add(
+        _ExecutionSteps(
+          key: ValueKey('steps-$detailId'),
+          storageId: '$detailId',
+          steps: List.of(details),
+        ),
+      );
       details.clear();
       detailId = null;
     }
@@ -536,8 +1002,17 @@ class _SessionPageState extends State<SessionPage> {
       final p = env.payloadMap;
       final kind = p['kind']?.toString() ?? '';
       final data = p['data'];
-      if (const ['user/message', 'assistant/message', 'text.delta', 'thought.delta',
-        'turn/end', 'turn.completed', 'turn.failed', 'approval_request', 'ask_user'].contains(kind)) {
+      if (const [
+        'user/message',
+        'assistant/message',
+        'text.delta',
+        'thought.delta',
+        'turn/end',
+        'turn.completed',
+        'turn.failed',
+        'approval_request',
+        'ask_user',
+      ].contains(kind)) {
         flushDetails();
       }
       detailId ??= '${env.sessionId}:${env.seqId}';
@@ -566,21 +1041,27 @@ class _SessionPageState extends State<SessionPage> {
           flush();
           final d = data is Map ? data : const {};
           final name = d['name']?.toString() ?? '';
-          details.add(_ToolLine(
-            icon: Icons.build,
-            color: Colors.blueGrey,
-            text: AppL10n.i.toolCall(name).trim(),
-          ));
+          details.add(
+            _ToolLine(
+              icon: Icons.build,
+              color: Colors.blueGrey,
+              text: AppL10n.i.toolCall(name).trim(),
+            ),
+          );
           break;
         case 'tool/result':
           flush();
           final d = data is Map ? data : const {};
           final failed = d['isError'] == true || d['error'] != null;
-          details.add(_ToolLine(
-            icon: failed ? Icons.error_outline : Icons.subdirectory_arrow_right,
-            color: failed ? Colors.red : Colors.grey,
-            text: failed ? AppL10n.i.toolFailed : AppL10n.i.toolResult,
-          ));
+          details.add(
+            _ToolLine(
+              icon: failed
+                  ? Icons.error_outline
+                  : Icons.subdirectory_arrow_right,
+              color: failed ? Colors.red : Colors.grey,
+              text: failed ? AppL10n.i.toolFailed : AppL10n.i.toolResult,
+            ),
+          );
           break;
         case 'turn/end':
           flush();
@@ -594,7 +1075,9 @@ class _SessionPageState extends State<SessionPage> {
           var errText = AppL10n.i.turnEnded(reason);
           if (failed && r is Map && r['error'] != null) {
             final e = r['error'];
-            final msg = e is Map ? (e['message']?.toString() ?? '') : e.toString();
+            final msg = e is Map
+                ? (e['message']?.toString() ?? '')
+                : e.toString();
             if (msg.isNotEmpty) errText = AppL10n.i.turnEndWith(reason, msg);
           }
           widgets.add(_TurnLine(ok: !failed, error: failed ? errText : null));
@@ -628,17 +1111,27 @@ class _SessionPageState extends State<SessionPage> {
           break;
         case 'tool.started':
           flush();
-          details.add(_ToolLine(
-            icon: Icons.build,
-            color: Colors.blueGrey,
-            text: AppL10n.i.toolStarted(
-                    '${env.payloadMap['toolName'] ?? ''} ${env.payloadMap['summary'] ?? ''}')
-                .trim(),
-          ));
+          details.add(
+            _ToolLine(
+              icon: Icons.build,
+              color: Colors.blueGrey,
+              text: AppL10n.i
+                  .toolStarted(
+                    '${env.payloadMap['toolName'] ?? ''} ${env.payloadMap['summary'] ?? ''}',
+                  )
+                  .trim(),
+            ),
+          );
           break;
         case 'tool.completed':
           flush();
-          details.add(_ToolLine(icon: Icons.check_circle, color: Colors.green, text: AppL10n.i.toolCompletedLabel));
+          details.add(
+            _ToolLine(
+              icon: Icons.check_circle,
+              color: Colors.green,
+              text: AppL10n.i.toolCompletedLabel,
+            ),
+          );
           break;
         case 'approval_request':
         case 'ask_user':
@@ -650,26 +1143,25 @@ class _SessionPageState extends State<SessionPage> {
           break;
         case 'turn.failed':
           flush();
-          widgets.add(_TurnLine(ok: false, error: env.payloadMap['error']?.toString()));
+          widgets.add(
+            _TurnLine(ok: false, error: env.payloadMap['error']?.toString()),
+          );
           break;
         default:
           // 未知事件：显示原始 kind（保持信息不丢）
           flush();
-          details.add(_ToolLine(icon: Icons.circle, color: Colors.grey, text: kind.isEmpty ? AppL10n.i.emptyEvent : kind));
+          details.add(
+            _ToolLine(
+              icon: Icons.circle,
+              color: Colors.grey,
+              text: kind.isEmpty ? AppL10n.i.emptyEvent : kind,
+            ),
+          );
       }
     }
     flush();
     flushDetails();
     _textWidgets = nextTextWidgets;
-    // 回合运行中：流式增量已到 → 打字机气泡；还在等首帧 → 等待指示。
-    // （报错/完成的回合不会走到这里）
-    if (turnRunning) {
-      if (streaming.isNotEmpty) {
-        widgets.add(_StreamingBubble(text: streaming));
-      } else {
-        widgets.add(const _ThinkingLine());
-      }
-    }
     return widgets;
   }
 
@@ -705,24 +1197,39 @@ class _SessionPageState extends State<SessionPage> {
 }
 
 class _ExecutionSteps extends StatelessWidget {
-  const _ExecutionSteps({super.key, required this.storageId, required this.steps});
+  const _ExecutionSteps({
+    super.key,
+    required this.storageId,
+    required this.steps,
+  });
   final String storageId;
   final List<Widget> steps;
   @override
   Widget build(BuildContext context) {
-    final failed = steps.whereType<_ToolLine>().any((s) => s.color == Colors.red);
+    final failed = steps.whereType<_ToolLine>().any(
+      (s) => s.color == Colors.red,
+    );
     return ExpansionTile(
       // ExpansionTile stores a bool; ScrollPosition stores a double. Give each
       // group a distinct PageStorage namespace instead of sharing the list's.
       key: PageStorageKey('execution-steps-$storageId'),
       dense: true,
       initiallyExpanded: false,
-      leading: Icon(failed ? Icons.error_outline : Icons.build_outlined, size: 18,
-          color: failed ? Colors.orange : Colors.blueGrey),
-      title: Text(AppL10n.i.isEn ? 'Steps (${steps.length})' : '执行步骤（${steps.length}）',
-          style: const TextStyle(fontSize: 13)),
-      subtitle: failed ? Text(AppL10n.i.isEn ? 'Some steps failed' : '部分步骤失败',
-          style: const TextStyle(fontSize: 12, color: Colors.orange)) : null,
+      leading: Icon(
+        failed ? Icons.error_outline : Icons.build_outlined,
+        size: 18,
+        color: failed ? Colors.orange : Colors.blueGrey,
+      ),
+      title: Text(
+        AppL10n.i.isEn ? 'Steps (${steps.length})' : '执行步骤（${steps.length}）',
+        style: const TextStyle(fontSize: 13),
+      ),
+      subtitle: failed
+          ? Text(
+              AppL10n.i.isEn ? 'Some steps failed' : '部分步骤失败',
+              style: const TextStyle(fontSize: 12, color: Colors.orange),
+            )
+          : null,
       children: steps,
     );
   }
@@ -745,33 +1252,40 @@ class _ApprovalCard extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(children: [
-              const Icon(Icons.gpp_maybe_outlined, color: Colors.deepOrange),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(AppL10n.i.pendingApprovalCard(item.toolName),
-                    style: const TextStyle(fontWeight: FontWeight.bold)),
-              ),
-            ]),
+            Row(
+              children: [
+                const Icon(Icons.gpp_maybe_outlined, color: Colors.deepOrange),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    AppL10n.i.pendingApprovalCard(item.toolName),
+                    style: const TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                ),
+              ],
+            ),
             if (item.summary != null && item.summary!.isNotEmpty)
               Padding(
                 padding: const EdgeInsets.only(top: 6, left: 28),
                 child: SelectableText(item.summary!),
               ),
             const SizedBox(height: 10),
-            Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-              OutlinedButton.icon(
-                icon: const Icon(Icons.close, size: 18),
-                label: Text(AppL10n.i.deny),
-                onPressed: () => onRespond(item, false),
-              ),
-              const SizedBox(width: 8),
-              FilledButton.icon(
-                icon: const Icon(Icons.check, size: 18),
-                label: Text(AppL10n.i.allow),
-                onPressed: () => onRespond(item, true),
-              ),
-            ]),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                OutlinedButton.icon(
+                  icon: const Icon(Icons.close, size: 18),
+                  label: Text(AppL10n.i.deny),
+                  onPressed: () => onRespond(item, false),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.icon(
+                  icon: const Icon(Icons.check, size: 18),
+                  label: Text(AppL10n.i.allow),
+                  onPressed: () => onRespond(item, true),
+                ),
+              ],
+            ),
           ],
         ),
       ),
@@ -797,12 +1311,14 @@ class _UserBubble extends StatelessWidget {
           color: Theme.of(context).colorScheme.primary,
           borderRadius: BorderRadius.circular(12),
         ),
-        child: SelectableText(
-          text,
-          style: TextStyle(
-            fontSize: 15,
-            height: 1.4,
-            color: Theme.of(context).colorScheme.onPrimary,
+        child: SelectionArea(
+          child: Text(
+            text,
+            style: TextStyle(
+              fontSize: 15,
+              height: 1.4,
+              color: Theme.of(context).colorScheme.onPrimary,
+            ),
           ),
         ),
       ),
@@ -812,9 +1328,10 @@ class _UserBubble extends StatelessWidget {
 
 /// 助手文本气泡：Markdown 渲染（标题/列表/粗体/链接/代码块，长按可选中复制）
 class _TextBubble extends StatelessWidget {
-  const _TextBubble({required this.text});
+  const _TextBubble({required this.text, required this.cache});
 
   final String text;
+  final ConversationMarkdownCache cache;
 
   @override
   Widget build(BuildContext context) {
@@ -826,24 +1343,37 @@ class _TextBubble extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         constraints: const BoxConstraints(maxWidth: 320),
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.5),
+          color: Theme.of(context).colorScheme.primaryContainer
+              .withValues(alpha: 0.5),
           borderRadius: BorderRadius.circular(12),
         ),
-        child: MarkdownBody(
-          data: text,
-          selectable: true,
-          // 聊天场景惯例：单个换行也换行（AI 输出列表常为单换行）
-          softLineBreak: true,
+        child: ConversationMarkdown(
+          text: text,
+          cache: cache,
           styleSheet: MarkdownStyleSheet.fromTheme(Theme.of(context)).copyWith(
             p: const TextStyle(fontSize: 15, height: 1.4),
             listBullet: const TextStyle(fontSize: 15, height: 1.4),
-            h1: const TextStyle(fontSize: 19, fontWeight: FontWeight.bold, height: 1.3),
-            h2: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, height: 1.3),
-            h3: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold, height: 1.3),
+            h1: const TextStyle(
+              fontSize: 19,
+              fontWeight: FontWeight.bold,
+              height: 1.3,
+            ),
+            h2: const TextStyle(
+              fontSize: 18,
+              fontWeight: FontWeight.bold,
+              height: 1.3,
+            ),
+            h3: const TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.bold,
+              height: 1.3,
+            ),
             code: TextStyle(
               fontSize: 13,
               fontFamily: 'monospace',
-              backgroundColor: isDark ? Colors.grey.shade800 : Colors.grey.shade200,
+              backgroundColor: isDark
+                  ? Colors.grey.shade800
+                  : Colors.grey.shade200,
             ),
             codeblockDecoration: BoxDecoration(
               color: isDark ? const Color(0xFF1E1E28) : const Color(0xFFF0F1F5),
@@ -851,7 +1381,9 @@ class _TextBubble extends StatelessWidget {
             ),
             codeblockPadding: const EdgeInsets.all(10),
             blockquoteDecoration: BoxDecoration(
-              border: Border(left: BorderSide(color: Colors.grey.shade400, width: 3)),
+              border: Border(
+                left: BorderSide(color: Colors.grey.shade400, width: 3),
+              ),
             ),
           ),
         ),
@@ -878,8 +1410,14 @@ class _ThoughtBubble extends StatelessWidget {
           color: Colors.grey.shade200,
           borderRadius: BorderRadius.circular(10),
         ),
-        child: Text(text,
-            style: TextStyle(fontSize: 13, fontStyle: FontStyle.italic, color: Colors.grey.shade700)),
+        child: Text(
+          text,
+          style: TextStyle(
+            fontSize: 13,
+            fontStyle: FontStyle.italic,
+            color: Colors.grey.shade700,
+          ),
+        ),
       ),
     );
   }
@@ -887,7 +1425,11 @@ class _ThoughtBubble extends StatelessWidget {
 
 /// 工具执行行
 class _ToolLine extends StatelessWidget {
-  const _ToolLine({required this.icon, required this.color, required this.text});
+  const _ToolLine({
+    required this.icon,
+    required this.color,
+    required this.text,
+  });
 
   final IconData icon;
   final Color color;
@@ -897,11 +1439,13 @@ class _ToolLine extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Row(children: [
-        Icon(icon, size: 15, color: color),
-        const SizedBox(width: 6),
-        Expanded(child: Text(text, style: const TextStyle(fontSize: 13))),
-      ]),
+      child: Row(
+        children: [
+          Icon(icon, size: 15, color: color),
+          const SizedBox(width: 6),
+          Expanded(child: Text(text, style: const TextStyle(fontSize: 13))),
+        ],
+      ),
     );
   }
 }
@@ -917,16 +1461,25 @@ class _TurnLine extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(children: [
-        Icon(ok ? Icons.check_circle : Icons.cancel, size: 16, color: ok ? Colors.green : Colors.red),
-        const SizedBox(width: 6),
-        Expanded(
-          child: Text(
-            ok ? AppL10n.i.taskDone : AppL10n.i.taskFailed(error),
-            style: TextStyle(fontSize: 13, color: ok ? Colors.green : Colors.red),
+      child: Row(
+        children: [
+          Icon(
+            ok ? Icons.check_circle : Icons.cancel,
+            size: 16,
+            color: ok ? Colors.green : Colors.red,
           ),
-        ),
-      ]),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              ok ? AppL10n.i.taskDone : AppL10n.i.taskFailed(error),
+              style: TextStyle(
+                fontSize: 13,
+                color: ok ? Colors.green : Colors.red,
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -939,15 +1492,21 @@ class _ThinkingLine extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        const SizedBox(
-          width: 13,
-          height: 13,
-          child: CircularProgressIndicator(strokeWidth: 2),
-        ),
-        const SizedBox(width: 8),
-        Text(AppL10n.i.thinking, style: const TextStyle(fontSize: 13, color: Colors.grey)),
-      ]),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 13,
+            height: 13,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            AppL10n.i.thinking,
+            style: const TextStyle(fontSize: 13, color: Colors.grey),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -956,7 +1515,9 @@ class _ThinkingLine extends StatelessWidget {
 /// 挂在消息列表末尾实时展示；durable 的 assistant/message 落定后清空，
 /// 由正常 Markdown 气泡接管。流式期间用纯 Text（每帧重建 Markdown 开销大）。
 class _StreamingBubble extends StatelessWidget {
-  const _StreamingBubble({required this.text});
+  const _StreamingBubble({required this.text, this.running = true});
+
+  final bool running;
 
   final String text;
 
@@ -969,11 +1530,12 @@ class _StreamingBubble extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
         constraints: const BoxConstraints(maxWidth: 320),
         decoration: BoxDecoration(
-          color: Theme.of(context).colorScheme.primaryContainer.withValues(alpha: 0.5),
+          color: Theme.of(context).colorScheme.primaryContainer
+              .withValues(alpha: 0.5),
           borderRadius: BorderRadius.circular(12),
         ),
         child: Text(
-          '$text ▍',
+          running ? '$text ▍' : text,
           style: const TextStyle(fontSize: 15, height: 1.4),
         ),
       ),
@@ -1001,14 +1563,20 @@ class _ModelPicker extends StatelessWidget {
           children: [
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 14, 16, 6),
-              child: Text(AppL10n.i.pickModel,
-                  style: Theme.of(ctx).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
+              child: Text(
+                AppL10n.i.pickModel,
+                style: Theme.of(ctx).textTheme.titleSmall
+                    ?.copyWith(fontWeight: FontWeight.bold),
+              ),
             ),
             // 「跟随默认」：清空 App 侧选择，回落宿主默认模型
             ListTile(
               dense: true,
               leading: const Icon(Icons.auto_awesome, size: 18),
-              title: Text(AppL10n.i.followDesktopDefault, style: const TextStyle(fontSize: 14)),
+              title: Text(
+                AppL10n.i.followDesktopDefault,
+                style: const TextStyle(fontSize: 14),
+              ),
               trailing: (state.selectedModelId == null)
                   ? const Icon(Icons.check, size: 18)
                   : null,
@@ -1016,7 +1584,10 @@ class _ModelPicker extends StatelessWidget {
             ),
             if (models.isEmpty)
               Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 20),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 20,
+                ),
                 child: Text(
                   AppL10n.i.noModelsHint,
                   style: const TextStyle(color: Colors.grey, fontSize: 13),
@@ -1026,13 +1597,18 @@ class _ModelPicker extends StatelessWidget {
               for (final m in models)
                 ListTile(
                   dense: true,
-                  title: Text((m['id'] ?? '').toString(),
-                      style: const TextStyle(fontSize: 14)),
+                  title: Text(
+                    (m['id'] ?? '').toString(),
+                    style: const TextStyle(fontSize: 14),
+                  ),
                   subtitle: (m['provider']?.toString().isNotEmpty ?? false)
-                      ? Text(m['provider'].toString(),
-                          style: const TextStyle(fontSize: 11))
+                      ? Text(
+                          m['provider'].toString(),
+                          style: const TextStyle(fontSize: 11),
+                        )
                       : null,
-                  trailing: (state.selectedModelId != null &&
+                  trailing:
+                      (state.selectedModelId != null &&
                           state.selectedModelId == m['id'].toString())
                       ? const Icon(Icons.check, size: 18)
                       : null,
@@ -1055,23 +1631,35 @@ class _ModelPicker extends StatelessWidget {
       onTap: () => _pick(context),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 3),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.tune, size: 14, color: Theme.of(context).colorScheme.primary),
-          const SizedBox(width: 4),
-          Flexible(
-            child: Text(
-              (mid == null || mid.isEmpty) ? AppL10n.i.followDesktopDefault : mid,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(
-                fontSize: 12,
-                color: Theme.of(context).colorScheme.primary,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.tune,
+              size: 14,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+            const SizedBox(width: 4),
+            Flexible(
+              child: Text(
+                (mid == null || mid.isEmpty)
+                    ? AppL10n.i.followDesktopDefault
+                    : mid,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 12,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
               ),
             ),
-          ),
-          Icon(Icons.arrow_drop_down,
-              size: 18, color: Theme.of(context).colorScheme.primary),
-        ]),
+            Icon(
+              Icons.arrow_drop_down,
+              size: 18,
+              color: Theme.of(context).colorScheme.primary,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1103,8 +1691,8 @@ class _AttachmentStrip extends StatelessWidget {
                   a.kind == 'upload'
                       ? Icons.upload_file
                       : a.kind == 'file'
-                          ? Icons.description_outlined
-                          : Icons.link,
+                      ? Icons.description_outlined
+                      : Icons.link,
                   size: 16,
                 ),
                 label: Text(
@@ -1142,37 +1730,63 @@ class _ProjectPickerDialogState extends State<_ProjectPickerDialog> {
     super.initState();
     _future = widget.state.listProjects();
   }
+
   @override
   Widget build(BuildContext context) => AlertDialog(
     title: Text(AppL10n.i.selectProject),
     content: SizedBox(
       width: 360,
       height: 320,
-      child: Column(children: [
-        Text(AppL10n.i.selectProjectHint),
-        const SizedBox(height: 12),
-        Expanded(child: FutureBuilder<List<ProjectEntry>>(
-          future: _future,
-          builder: (context, snapshot) {
-            if (snapshot.connectionState != ConnectionState.done) {
-              return const Center(child: CircularProgressIndicator());
-            }
-            if (snapshot.hasError) { return Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-              Text(AppL10n.i.projectsLoadFailed),
-              TextButton(onPressed: () => setState(() { _future = widget.state.listProjects(); }),
-                child: const Icon(Icons.refresh)),
-            ]); }
-            final projects = snapshot.data ?? [];
-            if (projects.isEmpty) return Center(child: Text(AppL10n.i.noProjects));
-            return ListView(children: [for (final project in projects)
-              ListTile(leading: const Icon(Icons.folder_outlined), title: Text(project.title),
-                onTap: () => Navigator.pop(context, project)),
-            ]);
-          },
-        )),
-      ]),
+      child: Column(
+        children: [
+          Text(AppL10n.i.selectProjectHint),
+          const SizedBox(height: 12),
+          Expanded(
+            child: FutureBuilder<List<ProjectEntry>>(
+              future: _future,
+              builder: (context, snapshot) {
+                if (snapshot.connectionState != ConnectionState.done) {
+                  return const Center(child: CircularProgressIndicator());
+                }
+                if (snapshot.hasError) {
+                  return Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Text(AppL10n.i.projectsLoadFailed),
+                      TextButton(
+                        onPressed: () => setState(() {
+                          _future = widget.state.listProjects();
+                        }),
+                        child: const Icon(Icons.refresh),
+                      ),
+                    ],
+                  );
+                }
+                final projects = snapshot.data ?? [];
+                if (projects.isEmpty)
+                  return Center(child: Text(AppL10n.i.noProjects));
+                return ListView(
+                  children: [
+                    for (final project in projects)
+                      ListTile(
+                        leading: const Icon(Icons.folder_outlined),
+                        title: Text(project.title),
+                        onTap: () => Navigator.pop(context, project),
+                      ),
+                  ],
+                );
+              },
+            ),
+          ),
+        ],
+      ),
     ),
-    actions: [TextButton(onPressed: () => Navigator.pop(context), child: Text(AppL10n.i.cancel))],
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: Text(AppL10n.i.cancel),
+      ),
+    ],
   );
 }
 
@@ -1187,12 +1801,18 @@ class _ChangesPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text(AppL10n.i.changesTitle, style: const TextStyle(fontSize: 16)),
+        title: Text(
+          AppL10n.i.changesTitle,
+          style: const TextStyle(fontSize: 16),
+        ),
       ),
       body: entries.isEmpty
           ? Center(
-              child: Text(AppL10n.i.noChanges,
-                  style: const TextStyle(color: Colors.grey)))
+              child: Text(
+                AppL10n.i.noChanges,
+                style: const TextStyle(color: Colors.grey),
+              ),
+            )
           : ListView.separated(
               itemCount: entries.length,
               separatorBuilder: (context, index) => const Divider(height: 1),
@@ -1207,9 +1827,13 @@ class _ChangesPage extends StatelessWidget {
                     e.isCreate ? Icons.post_add_outlined : Icons.edit_outlined,
                     color: e.isCreate ? Colors.green : Colors.orange,
                   ),
-                  title: Text(_basename(e.path),
-                      style: const TextStyle(
-                          fontSize: 14, fontWeight: FontWeight.w500)),
+                  title: Text(
+                    _basename(e.path),
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
                   subtitle: Text(
                     '${e.path} · ${e.isCreate ? AppL10n.i.newFileTag : AppL10n.i.modifiedTag} · +$added -$removed',
                     style: const TextStyle(fontSize: 11),
@@ -1219,7 +1843,8 @@ class _ChangesPage extends StatelessWidget {
                   onTap: () => Navigator.push(
                     context,
                     MaterialPageRoute<void>(
-                        builder: (_) => _FileDiffPage(entry: e)),
+                      builder: (_) => _FileDiffPage(entry: e),
+                    ),
                   ),
                 );
               },
@@ -1243,9 +1868,10 @@ class _FileDiffPage extends StatelessWidget {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(entry.path.split(RegExp(r'[\\/]')).last,
-            style:
-                const TextStyle(fontSize: 16, fontFamily: 'monospace')),
+        title: Text(
+          entry.path.split(RegExp(r'[\\/]')).last,
+          style: const TextStyle(fontSize: 16, fontFamily: 'monospace'),
+        ),
       ),
       body: Column(
         children: [
@@ -1258,8 +1884,9 @@ class _FileDiffPage extends StatelessWidget {
                 child: Text(
                   '${entry.path} · ${entry.isCreate ? AppL10n.i.newFileTag : AppL10n.i.modifiedTag} · +$added -$removed',
                   style: TextStyle(
-                      fontSize: 11,
-                      color: isDark ? Colors.white70 : Colors.black54),
+                    fontSize: 11,
+                    color: isDark ? Colors.white70 : Colors.black54,
+                  ),
                 ),
               ),
             ),
@@ -1275,7 +1902,8 @@ class _FileDiffPage extends StatelessWidget {
                   _ => Colors.transparent,
                 };
                 final fg = switch (l.type) {
-                  'added' => isDark ? Colors.greenAccent : Colors.green.shade800,
+                  'added' =>
+                    isDark ? Colors.greenAccent : Colors.green.shade800,
                   'removed' => isDark ? Colors.redAccent : Colors.red.shade800,
                   _ => isDark ? Colors.white38 : Colors.black38,
                 };
@@ -1292,21 +1920,25 @@ class _FileDiffPage extends StatelessWidget {
                     children: [
                       SizedBox(
                         width: 16,
-                        child: Text(prefix,
-                            style: TextStyle(
-                                fontFamily: 'monospace',
-                                fontSize: 12,
-                                height: 1.4,
-                                color: fg)),
+                        child: Text(
+                          prefix,
+                          style: TextStyle(
+                            fontFamily: 'monospace',
+                            fontSize: 12,
+                            height: 1.4,
+                            color: fg,
+                          ),
+                        ),
                       ),
                       Expanded(
                         child: SelectableText(
                           l.text.isEmpty ? ' ' : l.text,
                           style: TextStyle(
-                              fontFamily: 'monospace',
-                              fontSize: 12,
-                              height: 1.4,
-                              color: fg),
+                            fontFamily: 'monospace',
+                            fontSize: 12,
+                            height: 1.4,
+                            color: fg,
+                          ),
                         ),
                       ),
                     ],

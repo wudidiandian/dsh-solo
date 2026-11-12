@@ -35,6 +35,7 @@ const String pushHigh = 'high';
 class CmdAction {
   static const sessionPrompt = 'session.prompt';
   static const approvalRespond = 'approval.respond';
+  static const interactionRespond = 'interaction.respond';
   static const fsListDir = 'fs.list_dir';
   static const sessionRename = 'session.rename';
   static const sessionDelete = 'session.delete';

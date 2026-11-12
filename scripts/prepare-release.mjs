@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 const root = fileURLToPath(new URL('../', import.meta.url))
 export const DEFAULT_RELEASE_REPOSITORY = 'wudidiandian/dsh-solo'
 export function releaseVersion({ rootVersion, pluginVersion, appVersion, requestedVersion = '' }) {
-  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(rootVersion)) throw new Error('Release version must be a stable x.y.z version')
+  if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-rc\.[1-9]\d*)?$/.test(rootVersion)) throw new Error('Release version must be x.y.z or x.y.z-rc.N')
   const mobile = /^(\S+)\+([1-9]\d*)$/.exec(appVersion)
   if (pluginVersion !== rootVersion || !mobile || mobile[1] !== rootVersion) throw new Error('Root, plugin and App versions must match; App also needs a positive build number')
   if (requestedVersion && requestedVersion !== rootVersion) throw new Error('Requested version does not match the committed manifests; update and commit versions first')

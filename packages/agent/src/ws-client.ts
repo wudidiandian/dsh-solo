@@ -94,6 +94,10 @@ export class SoloRelayClient extends EventEmitter {
     }
   }
 
+  get connectedMobileCount(): number {
+    return this.state === 'open' ? [...this.securePeers.values()].filter(p => p.ready && Date.now() - p.lastSeen < 120_000).length : 0
+  }
+
   get currentState(): ClientState {
     return this.state
   }

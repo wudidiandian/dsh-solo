@@ -606,3 +606,66 @@ it('routes project selection to new sessions and refuses moving an existing sess
     expect(create).toHaveBeenCalledTimes(1)
   } finally { core.stop() }
 })
+
+it('pages past 800 persisted events and keeps IDs unique after restart', async () => {
+  const fs = await import('node:fs/promises')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const dir = await fs.mkdtemp(join(tmpdir(), 'dsh-history-pages-'))
+  const relay = new MockRelay()
+  const first = makeServices()
+  const core = new AgentCore(relay, { services: first.services, historyDir: dir })
+  let restarted: AgentCore | undefined
+  const ask = async (client: MockRelay, id: string, data: Record<string, unknown>) => {
+    client.emit('command', makeEnvelope('cmd.dispatch', { action: 'session.history', data }, { reqId: id }))
+    await vi.waitFor(() => expect(client.ofType('rpc.response').some(e => e.reqId === id)).toBe(true))
+    return (client.ofType('rpc.response').find(e => e.reqId === id)!.payload as any).result
+  }
+  core.start()
+  try {
+    for (let n = 0; n < 1205; n++) first.emitEvent('long', { kind: 'user/message', text: `message ${n}` })
+    let before: number | undefined
+    const seen: number[] = []
+    for (let page = 0; page < 10; page++) {
+      const result = await ask(relay, `page-${page}`, { sessionId: 'long', beforeSeqId: before, limit: 200 })
+      seen.unshift(...result.events.map((e: any) => e.seqId))
+      if (!result.hasMore) break
+      expect(result.beforeSeqId).toBeLessThan(before ?? Infinity)
+      before = result.beforeSeqId
+    }
+    expect(seen).toEqual(Array.from({ length: 1205 }, (_, n) => n + 1))
+    core.stop()
+    const second = makeServices()
+    const relay2 = new MockRelay()
+    restarted = new AgentCore(relay2, { services: second.services, historyDir: dir })
+    restarted.start()
+    second.emitEvent('long', { kind: 'user/message', text: 'after restart' })
+    expect(relay2.ofType('session.event')[0].seqId).toBeGreaterThan(1205)
+    const all = await ask(relay2, 'all', { sessionId: 'long' })
+    expect(all.events).toHaveLength(1206)
+  } finally {
+    core.stop(); restarted?.stop()
+    await fs.rm(dir, { recursive: true, force: true })
+  }
+})
+
+it('uses stable host IDs and backfills pre-installation history', async () => {
+  const relay = new MockRelay()
+  const { services, emitEvent } = makeServices()
+  services.readHistory = async () => Array.from({ length: 450 }, (_, n) => ({
+    kind: 'user/message', seq: n, seqId: 1_000_000_000_000 + n + 1, historyEpoch: 'host-v1', data: { content: [`host ${n}`] },
+  }))
+  const core = new AgentCore(relay, { services })
+  core.start()
+  try {
+    emitEvent('desktop', { kind: 'assistant/message', seq: 449 } as any)
+    expect(relay.ofType('session.event')[0].seqId).toBe(1_000_000_000_450)
+    expect((relay.ofType('session.event')[0].payload as any).historyEpoch).toBe('host-v1')
+    relay.emit('command', makeEnvelope('cmd.dispatch', { action: 'session.history', data: { sessionId: 'desktop', limit: 200, beforeSeqId: 1_000_000_000_251 } }, { reqId: 'host-history' }))
+    await vi.waitFor(() => expect(relay.lastCommandResponse()).toBeDefined())
+    const result = (relay.lastCommandResponse()!.payload as any).result
+    expect(result.events[0].seqId).toBe(1_000_000_000_051)
+    expect(result.events.at(-1).seqId).toBe(1_000_000_000_250)
+    expect(result.hasMore).toBe(true)
+  } finally { core.stop() }
+})

@@ -1,3 +1,4 @@
+import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync, renameSync } from 'node:fs'
 import { mkdir, readFile, appendFile, rm, writeFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
@@ -16,6 +17,7 @@ import {
   type SessionRenameData,
   makeEnvelope,
 } from '@dsh-solo/protocol'
+import type { InteractionBroker } from './interactions.js'
 import { inferPushPriority, summarizeEvent } from './push-level.js'
 import { generateToken, writeTokenFile } from './token.js'
 
@@ -39,6 +41,7 @@ export interface AgentSessionLike {
 }
 
 export interface HarnessServices {
+  readHistory?(id: string): Promise<SessionEvent[]>
   listProjects?(): Promise<unknown[]>
   listModels(): Promise<unknown[]>
   listSessions(): Promise<unknown[]>
@@ -56,6 +59,7 @@ export interface HarnessServices {
 
 export interface AgentCoreOptions {
   services: HarnessServices
+  interactions?: InteractionBroker
   /** 手机端展开深层目录（由 workspace.ts + 白名单配置提供） */
   listDir?: (path: string) => Promise<unknown>
   /** 快照附加数据（如浅目录树扫描） */
@@ -74,8 +78,10 @@ export interface AgentCoreOptions {
   rotateDeviceToken?: (newToken: string) => void | Promise<void>
 }
 
-/** Max buffered events per session (memory buffer and history reply are capped alike) */
+/** Memory-only hot window; persisted/host history remains available through paging. */
 const HISTORY_BUFFER_LIMIT = 800
+// Keep canonical host sequence IDs above legacy counters during migration.
+export const HOST_HISTORY_OFFSET = 1_000_000_000_000
 
 /** 单文件上传上限（与 relay 默认 MaxUploadSize 对齐；relay 已先行硬校验，此处双保险） */
 const MAX_UPLOAD_SIZE = 10 << 20
@@ -122,6 +128,33 @@ export interface RelayLike {
  */
 export class AgentCore {
   private seq = 0
+  private reservedSeq = 0
+  private sequenceReady = false
+
+  // Reserve ranges before publishing; restart/crash may leave gaps, never reuse IDs.
+  private nextSequence(): number {
+    const dir = this.opts.historyDir
+    if (!this.sequenceReady) {
+      if (dir && existsSync(dir)) {
+        const counter = join(dir, '.sequence')
+        if (existsSync(counter)) this.seq = Number(readFileSync(counter, 'utf8')) || 0
+        for (const name of readdirSync(dir).filter(n => n.endsWith('.jsonl'))) {
+          for (const line of readFileSync(join(dir, name), 'utf8').split('\n')) {
+            try { this.seq = Math.max(this.seq, Number(JSON.parse(line).seqId) || 0) } catch { /* partial line */ }
+          }
+        }
+      }
+      this.sequenceReady = true
+    }
+    if (dir && this.seq >= this.reservedSeq) {
+      mkdirSync(dir, { recursive: true })
+      const reserved = this.seq + 1024
+      writeFileSync(join(dir, '.sequence.next'), String(reserved))
+      renameSync(join(dir, '.sequence.next'), join(dir, '.sequence'))
+      this.reservedSeq = reserved
+    }
+    return ++this.seq
+  }
   private readonly pendingApprovals = new Map<string, (approved: boolean) => void>()
   private readonly unsubscribes: Array<() => void> = []
   private started = false
@@ -278,6 +311,7 @@ export class AgentCore {
           models,
           sessions,
           ...extra,
+          pendingInteractions: this.opts.interactions?.snapshot(),
           timestamp: Date.now(),
         } satisfies AgentSnapshotPayload),
       )
@@ -317,8 +351,10 @@ export class AgentCore {
     // Pending deltas must precede the durable message/turn completion, otherwise
     // a late timer resurrects the typing cursor after the full reply arrived.
     this.flushStream(sessionId)
-    this.seq++
-    const seqId = this.seq
+    const hostSeq = (event as { seq?: unknown }).seq
+    const canonical = !!this.opts.services.readHistory && Number.isSafeInteger(hostSeq) && Number(hostSeq) >= 0
+    const seqId = canonical ? HOST_HISTORY_OFFSET + Number(hostSeq) + 1 : this.nextSequence()
+    if (canonical) event = { ...event, seqId, historyEpoch: 'host-v1' }
     this.recordHistory(sessionId, event, seqId)
     const pushLevel = inferPushPriority(event.kind)
     this.client.send(
@@ -406,28 +442,18 @@ export class AgentCore {
 
   /**
    * Load session history.
-   * - Without sinceSeqId: memory buffer first, else read disk jsonl and backfill the buffer.
-   * - With sinceSeqId: read disk jsonl first (survives memory-buffer eviction gaps) and
-   *   filter to seqId > sinceSeqId; fall back to the memory buffer when no file exists.
+   * Prefer authoritative host history, then the complete disk log. The hot
+   * memory window is only a fallback when persistence is unavailable.
    */
   private async loadHistory(sessionId: string, sinceSeqId?: number): Promise<SessionEvent[]> {
-    if (typeof sinceSeqId === 'number') {
-      await this.historyWriteChains.get(sessionId)
-      const disk = await this.readHistoryFile(sessionId)
-      const source = disk ?? this.historyBuffers.get(sessionId) ?? []
-      return source.filter((e) => {
-        const seq = typeof e.seqId === 'number' ? e.seqId : 0
-        return seq > sinceSeqId
-      })
-    }
-    const buffered = this.historyBuffers.get(sessionId)
-    if (buffered && buffered.length > 0) return [...buffered]
-    const disk = await this.readHistoryFile(sessionId)
-    if (disk == null) return []
-    const trimmedEvents =
-      disk.length > HISTORY_BUFFER_LIMIT ? disk.slice(disk.length - HISTORY_BUFFER_LIMIT) : disk
-    this.historyBuffers.set(sessionId, trimmedEvents)
-    return trimmedEvents
+    await this.historyWriteChains.get(sessionId)
+    const source = this.opts.services.readHistory
+      ? await this.opts.services.readHistory(sessionId)
+      : (await this.readHistoryFile(sessionId)) ?? this.historyBuffers.get(sessionId) ?? []
+    const unique = new Map<number, SessionEvent>()
+    for (const event of source) if (typeof event.seqId === 'number') unique.set(event.seqId, event)
+    return [...unique.values()].sort((a, b) => Number(a.seqId) - Number(b.seqId))
+      .filter(e => sinceSeqId === undefined || Number(e.seqId) > sinceSeqId)
   }
 
   /** Drop the in-memory buffer and delete the on-disk jsonl for a session */
@@ -448,7 +474,7 @@ export class AgentCore {
 
   private interceptApproval(req: ApprovalRequest): Promise<boolean> {
     if (this.stopped) return Promise.resolve(false)
-    this.seq++
+    this.nextSequence()
     this.client.send(
       makeEnvelope('session.event', { kind: 'approval_request', approvalId: req.id, ...req }, {
         sessionId: req.sessionId,
@@ -514,6 +540,13 @@ export class AgentCore {
           respond(true, done)
           break
         }
+        case 'interaction.respond': {
+          if (!this.opts.interactions) throw new Error('Interaction bridge unavailable')
+          const data = payload.data as { requestId: unknown; response: unknown }
+          this.opts.interactions.respond(env.sessionId, data?.requestId, data?.response)
+          respond(true)
+          break
+        }
         case 'approval.respond': {
           const data = payload.data as ApprovalRespondData
           const resolve = this.pendingApprovals.get(data.approvalId)
@@ -545,7 +578,24 @@ export class AgentCore {
         case 'session.history': {
           const data = payload.data as SessionHistoryData
           const events = await this.loadHistory(data.sessionId, data.sinceSeqId)
-          respond(true, { events })
+          const before = data.beforeSeqId
+          if (before !== undefined && (!Number.isSafeInteger(before) || before <= 0)) throw new Error('Invalid history cursor')
+          const eligible = before === undefined ? events : events.filter(e => Number(e.seqId) < before)
+          const paged = data.limit !== undefined
+          const limit = paged ? Math.max(1, Math.min(200, Math.trunc(Number(data.limit)) || 200)) : eligible.length
+          const selected: SessionEvent[] = []
+          let bytes = 0
+          for (let i = eligible.length - 1; i >= 0 && selected.length < limit; i--) {
+            const size = Buffer.byteLength(JSON.stringify(eligible[i]), 'utf8')
+            if (paged && selected.length && bytes + size > 512 * 1024) break
+            selected.push(eligible[i]); bytes += size
+          }
+          respond(true, {
+            events: selected.reverse(),
+            hasMore: selected.length < eligible.length,
+            beforeSeqId: selected[0]?.seqId,
+            historyEpoch: this.opts.services.readHistory ? 'host-v1' : 'relay-v1',
+          })
           break
         }
         case 'device.token.get':

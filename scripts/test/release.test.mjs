@@ -11,7 +11,7 @@ test('stable release uses committed versions, including Android build number', (
   assert.deepEqual(releaseVersion(versions), { version: '0.1.5', tag: 'v0.1.5', appBuildNumber: '6' })
   assert.equal(releaseVersion({ ...versions, requestedVersion: '0.1.5' }).tag, 'v0.1.5')
 })
-test('rejects mismatched, prerelease and uncommitted requested versions', () => {
+test('rejects mismatched, unsupported prerelease and uncommitted requested versions', () => {
   for (const change of [
     { pluginVersion: '0.1.4' }, { appVersion: '0.1.4+6' }, { appVersion: '0.1.5+0' },
     { appVersion: '0.1.5' }, { rootVersion: '0.1.5-beta.1' }, { rootVersion: '00.1.5' },
@@ -81,4 +81,9 @@ test('invalid source commits and malformed distribution JSON fail preflight', as
 test('rejects a stale publication target outside the current repository', async t => {
   const { cwd, env } = await fixture(t)
   await assert.rejects(prepareRelease({ ...env, RELEASE_REPOSITORY: 'example/other' }, cwd), /current source repository/)
+})
+
+test('RC release accepts matching committed versions', () => {
+  const result = releaseVersion({rootVersion:'0.1.6-rc.1',pluginVersion:'0.1.6-rc.1',appVersion:'0.1.6-rc.1+16'})
+  assert.equal(result.tag, 'v0.1.6-rc.1')
 })

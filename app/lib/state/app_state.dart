@@ -99,13 +99,13 @@ class PendingAttachment {
 
   /// 转成 session.prompt.attachments 的 JSON（null 字段省略）
   Map<String, dynamic> toJson() => {
-        'kind': kind,
-        'name': name,
-        if (path != null) 'path': path,
-        if (url != null) 'url': url,
-        if (size != null) 'size': size,
-        if (mime != null) 'mime': mime,
-      };
+    'kind': kind,
+    'name': name,
+    if (path != null) 'path': path,
+    if (url != null) 'url': url,
+    if (size != null) 'size': size,
+    if (mime != null) 'mime': mime,
+  };
 }
 
 /// 快照目录树节点（防御性解析，字段缺失不崩溃）
@@ -168,11 +168,18 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     try {
       // Supported by existing plugin versions; no relay/server upgrade required.
-      final response = await c.rpc('device.token.get', {}, timeout: const Duration(seconds: 5));
-      if (!identical(client, c) || epoch != _connectionEpoch || !c.isOpen) return;
+      final response = await c.rpc(
+        'device.token.get',
+        {},
+        timeout: const Duration(seconds: 5),
+      );
+      if (!identical(client, c) || epoch != _connectionEpoch || !c.isOpen)
+        return;
       final result = response.payloadMap['result'];
-      final verified = response.payloadMap['ok'] == true &&
-          result is Map && result['token'] == c.deviceToken;
+      final verified =
+          response.payloadMap['ok'] == true &&
+          result is Map &&
+          result['token'] == c.deviceToken;
       final wasOnline = agentOnline;
       agentOnline = verified;
       desktopError = verified ? null : AppL10n.i.desktopUnavailable;
@@ -198,7 +205,6 @@ class AppState extends ChangeNotifier {
       throw StateError(AppL10n.i.desktopUnavailable);
     }
   }
-
 
   /// 快照数据
   List<Map<String, dynamic>> models = [];
@@ -238,7 +244,8 @@ class AppState extends ChangeNotifier {
   final List<PendingAttachment> pendingAttachments = [];
 
   /// 待发送附件数（不含上传中失败的临时项）是否已满
-  bool get attachmentsFull => pendingAttachments.length >= maxAttachmentsPerMessage;
+  bool get attachmentsFull =>
+      pendingAttachments.length >= maxAttachmentsPerMessage;
 
   /// 添加附件（电脑文件 / 链接；上传的走 uploadBytes）
   void addAttachment(PendingAttachment att) {
@@ -292,7 +299,9 @@ class AppState extends ChangeNotifier {
         'chunks': chunks,
       }, timeout: const Duration(seconds: 30));
       if (offer.payloadMap['ok'] != true) {
-        throw Exception(offer.payloadMap['error']?.toString() ?? AppL10n.i.uploadRejected(''));
+        throw Exception(
+          offer.payloadMap['error']?.toString() ?? AppL10n.i.uploadRejected(''),
+        );
       }
       String path = '';
       // 上传节流：对齐 relay 字节令牌桶（upload-rate 默认 1MB/s，超速硬断连）。
@@ -310,14 +319,18 @@ class AppState extends ChangeNotifier {
         final wait = dueMs - DateTime.now().millisecondsSinceEpoch;
         if (wait > 0) await Future.delayed(Duration(milliseconds: wait));
         final start = i * uploadChunkSize;
-        final end = (start + uploadChunkSize) < bytes.length ? (start + uploadChunkSize) : bytes.length;
+        final end = (start + uploadChunkSize) < bytes.length
+            ? (start + uploadChunkSize)
+            : bytes.length;
         final resp = await c.rpc(CmdAction.fileChunk, {
           'transferId': transferId,
           'index': i,
           'data': base64Encode(bytes.sublist(start, end)),
         }, timeout: const Duration(seconds: 60));
         if (resp.payloadMap['ok'] != true) {
-          throw Exception(resp.payloadMap['error']?.toString() ?? AppL10n.i.chunkUploadFailed);
+          throw Exception(
+            resp.payloadMap['error']?.toString() ?? AppL10n.i.chunkUploadFailed,
+          );
         }
         final result = resp.payloadMap['result'];
         path = (result is Map ? result['path'] : null)?.toString() ?? path;
@@ -365,17 +378,27 @@ class AppState extends ChangeNotifier {
   final Map<String, StringBuffer> _streaming = {};
 
   /// 会话当前流式增量文本（空 = 没有进行中的流式回复）
-  String streamingTextOf(String sessionId) => _streaming[sessionId]?.toString() ?? '';
+  String streamingTextOf(String sessionId) =>
+      _streaming[sessionId]?.toString() ?? '';
 
   /// 会话内 Agent 的文件变更（Diff 查看器数据源，从事件流即时提取）
-  List<ChangeEntry> changesOf(String sessionId) =>
-      extractChanges(eventsOf(sessionId));
+  final Map<String, List<ChangeEntry>> _changeCache = {};
+
+  List<ChangeEntry> changesOf(String sessionId) => _changeCache.putIfAbsent(
+    sessionId,
+    () => extractChanges(eventsOf(sessionId)),
+  );
+
+  void _invalidateChanges(String sessionId) => _changeCache.remove(sessionId);
 
   /// 待审批（approvalId → item）
   final Map<String, ApprovalItem> approvals = {};
 
+  final Map<String, Map<String, dynamic>> interactions = {};
+
   /// 待审批数量（横幅展示用）
-  int get pendingApprovalCount => approvals.values.where((a) => !a.resolved).length;
+  int get pendingApprovalCount =>
+      approvals.values.where((a) => !a.resolved).length;
 
   List<Envelope> eventsOf(String sessionId) => _events[sessionId] ?? const [];
 
@@ -383,30 +406,57 @@ class AppState extends ChangeNotifier {
   void applyEnvelope(Envelope env) {
     switch (env.type) {
       case MsgType.rpcResponse:
-        if (env.payloadMap['ok'] == false && env.payloadMap['error'] == 'agent offline') {
+        if (env.payloadMap['ok'] == false &&
+            env.payloadMap['error'] == 'agent offline') {
           agentOnline = false;
           desktopError = AppL10n.i.desktopUnavailable;
         }
         break;
       case MsgType.agentSnapshot:
         final p = env.payloadMap;
+        interactions.clear();
+        if (p['pendingInteractions'] is List) {
+          for (final raw in p['pendingInteractions'] as List) {
+            if (raw is Map &&
+                raw['id'] is String &&
+                raw['sessionId'] is String &&
+                (raw['type'] == 'approval' || raw['type'] == 'question')) {
+              interactions[raw['id']] = Map<String, dynamic>.from(raw);
+            }
+          }
+        }
         models = ((p['models'] as List?) ?? [])
-            .map((e) => e is Map ? Map<String, dynamic>.from(e) : <String, dynamic>{'id': e.toString()})
+            .map(
+              (e) => e is Map
+                  ? Map<String, dynamic>.from(e)
+                  : <String, dynamic>{'id': e.toString()},
+            )
             .toList();
-        final list = ((p['sessions'] as List?) ?? []).map(SessionEntry.from).toList();
+        final list = ((p['sessions'] as List?) ?? [])
+            .map(SessionEntry.from)
+            .toList();
         // 从新到旧排序（新会话置顶；旧版 agent 快照未排序，此处兜底）
-        list.sort((a, b) => (double.tryParse(b.updatedAt ?? '') ?? 0)
-            .compareTo(double.tryParse(a.updatedAt ?? '') ?? 0));
+        list.sort(
+          (a, b) => (double.tryParse(b.updatedAt ?? '') ?? 0).compareTo(
+            double.tryParse(a.updatedAt ?? '') ?? 0,
+          ),
+        );
         sessions = list;
         final liveIds = list.map((s) => s.id).toSet();
         _busySessions.removeWhere((id) => !liveIds.contains(id));
         for (final raw in (p['sessions'] as List? ?? const [])) {
           if (raw is! Map || raw['running'] is! bool) continue;
           final id = (raw['id'] ?? raw['sessionId'] ?? '').toString();
-          if (raw['running'] == true) { _busySessions.add(id); }
-          else { _busySessions.remove(id); }
+          if (raw['running'] == true) {
+            _busySessions.add(id);
+          } else {
+            _busySessions.remove(id);
+          }
         }
-        dirTree = ((p['dirTree'] as List?) ?? []).map(DirNode.from).whereType<DirNode>().toList();
+        dirTree = ((p['dirTree'] as List?) ?? [])
+            .map(DirNode.from)
+            .whereType<DirNode>()
+            .toList();
         break;
 
       case MsgType.sessionEvent:
@@ -420,9 +470,11 @@ class AppState extends ChangeNotifier {
         final kind = env.payloadMap['kind']?.toString() ?? '';
         if (kind == 'text-delta') {
           _busySessions.add(sid);
-          _streaming.putIfAbsent(sid, () => StringBuffer()).write(env.payloadMap['text']?.toString() ?? '');
+          _streaming
+              .putIfAbsent(sid, () => StringBuffer())
+              .write(env.payloadMap['text']?.toString() ?? '');
         } else if (kind == 'end') {
-          _streaming.remove(sid);
+          // Keep the provisional reply until its durable replacement arrives.
         }
         // reasoning-delta 暂不展示（等待态已有“正在思考…”）
         break;
@@ -447,12 +499,30 @@ class AppState extends ChangeNotifier {
     final sid = env.sessionId ?? '';
     if (sid.isEmpty) return;
     final seq = env.seqId ?? 0;
-    if (seq <= (lastSeq[sid] ?? 0)) return; // 重复 / 乱序报文丢弃
-    lastSeq[sid] = seq;
-    _events.putIfAbsent(sid, () => <Envelope>[]).add(env);
+    final list = _events.putIfAbsent(sid, () => <Envelope>[]);
+    final epoch = env.payloadMap['historyEpoch'];
+    if (epoch == 'host-v1' &&
+        list.any((e) => e.payloadMap['historyEpoch'] != epoch)) {
+      list.removeWhere((e) => e.payloadMap['historyEpoch'] != epoch);
+      lastSeq[sid] = 0;
+    } else if (epoch != 'host-v1' &&
+        list.any((e) => e.payloadMap['historyEpoch'] == 'host-v1')) {
+      return;
+    }
+    // A late record can fill a real hole; max observed ID is not a completeness cursor.
+    if (list.any((e) => e.seqId == seq)) return;
+    final late = seq < (lastSeq[sid] ?? 0);
+    if (seq > (lastSeq[sid] ?? 0)) lastSeq[sid] = seq;
+    list.add(env);
+    if (late) list.sort((a, b) => (a.seqId ?? 0).compareTo(b.seqId ?? 0));
+    if (env.payloadMap['kind'] == 'tool/call' ||
+        env.payloadMap['kind'] == 'tool/result') {
+      _invalidateChanges(sid);
+    }
 
     if (env.payloadMap['kind'] == 'approval_request') {
-      final id = (env.payloadMap['approvalId'] ?? env.payloadMap['id'] ?? '').toString();
+      final id = (env.payloadMap['approvalId'] ?? env.payloadMap['id'] ?? '')
+          .toString();
       if (id.isNotEmpty && approvals[id] == null) {
         approvals[id] = ApprovalItem(
           approvalId: id,
@@ -465,19 +535,32 @@ class AppState extends ChangeNotifier {
     // 审批已决（agent 侧回传的 resolved 事件，可选）
     final kind = env.payloadMap['kind'];
     // 回合运行状态：turn/start → 运行中；turn/end → 结束
-    if (kind == 'turn/start' || kind == 'turn.started') {
-      _busySessions.add(sid);
-    } else if (kind == 'turn/end' || kind == 'turn.completed' || kind == 'turn.failed') {
-      _busySessions.remove(sid);
-      // 回合结束：流式增量清空（无论正常完成还是报错，durable 消息已定局）
+    if (!late && (kind == 'turn/start' || kind == 'turn.started')) {
       _streaming.remove(sid);
+      _busySessions.add(sid);
+    } else if (!late &&
+        (kind == 'turn/end' ||
+            kind == 'turn.completed' ||
+            kind == 'turn.failed')) {
+      _busySessions.remove(sid);
+      // A delayed durable message must replace provisional text atomically.
     }
     // durable 完整消息落定：流式缓冲让位给 Markdown 气泡（防重复显示）
-    if (kind == 'assistant/message' || kind == 'assistant/attempt') {
+    if (kind == 'assistant/message' &&
+        (!late ||
+            !list.any(
+              (e) =>
+                  (e.seqId ?? 0) > seq &&
+                  const [
+                    'turn/start',
+                    'turn.started',
+                  ].contains(e.payloadMap['kind']),
+            ))) {
       _streaming.remove(sid);
     }
     if (kind == 'approval_resolved' || kind == 'approval.completed') {
-      final id = (env.payloadMap['approvalId'] ?? env.payloadMap['id'] ?? '').toString();
+      final id = (env.payloadMap['approvalId'] ?? env.payloadMap['id'] ?? '')
+          .toString();
       approvals[id]?.resolved = true;
     }
   }
@@ -485,9 +568,13 @@ class AppState extends ChangeNotifier {
   /// 连接 relay：创建客户端并接管回调
   void connect(RelayClient newClient) {
     final previous = client;
-    final changedDevice = relayUrl != null &&
-        (relayUrl != newClient.url || deviceToken != newClient.deviceToken || previous?.encryptionKey != newClient.encryptionKey);
-    client = newClient; // Invalidate old callbacks before stopping their socket.
+    final changedDevice =
+        relayUrl != null &&
+        (relayUrl != newClient.url ||
+            deviceToken != newClient.deviceToken ||
+            previous?.encryptionKey != newClient.encryptionKey);
+    client =
+        newClient; // Invalidate old callbacks before stopping their socket.
     previous?.stop();
     _connectionEpoch++;
     _desktopTimer?.cancel();
@@ -503,11 +590,13 @@ class AppState extends ChangeNotifier {
       dirTree = [];
       selectedModelId = null;
       _events.clear();
+      _changeCache.clear();
       lastSeq.clear();
       gapSessions.clear();
       _busySessions.clear();
       _streaming.clear();
       approvals.clear();
+      interactions.clear();
       pendingAttachments.clear();
     }
     relayUrl = newClient.url;
@@ -567,15 +656,31 @@ class AppState extends ChangeNotifier {
     await _ensureDesktop(c);
     final response = await c.rpc('project.list', {});
     if (response.payloadMap['ok'] != true) {
-      throw StateError(response.payloadMap['error']?.toString() ?? AppL10n.i.projectsLoadFailed);
+      throw StateError(
+        response.payloadMap['error']?.toString() ??
+            AppL10n.i.projectsLoadFailed,
+      );
     }
     final result = response.payloadMap['result'];
     if (result is! List) throw StateError(AppL10n.i.projectsLoadFailed);
-    return result.whereType<Map>().where((p) => p['id'] is String && (p['id'] as String).isNotEmpty)
-        .map((p) => ProjectEntry(id: p['id'] as String, title: (p['title'] ?? p['id']).toString())).toList();
+    return result
+        .whereType<Map>()
+        .where((p) => p['id'] is String && (p['id'] as String).isNotEmpty)
+        .map(
+          (p) => ProjectEntry(
+            id: p['id'] as String,
+            title: (p['title'] ?? p['id']).toString(),
+          ),
+        )
+        .toList();
   }
 
-  Future<Envelope> sendPrompt(String text, {String? sessionId, String? modelId, String? projectId}) async {
+  Future<Envelope> sendPrompt(
+    String text, {
+    String? sessionId,
+    String? modelId,
+    String? projectId,
+  }) async {
     final c = client;
     if (c == null) throw StateError('relay not connected');
     await _ensureDesktop(c);
@@ -584,17 +689,19 @@ class AppState extends ChangeNotifier {
     }
     final mid = modelId ?? selectedModelId;
     final atts = [for (final a in pendingAttachments) a.toJson()];
-    return c.rpc(CmdAction.sessionPrompt, {
-      if (sessionId != null) 'sessionId': sessionId,
-      if (projectId != null) 'projectId': projectId,
-      if (mid != null && mid.isNotEmpty) 'modelId': mid,
-      'prompt': text,
-      if (atts.isNotEmpty) 'attachments': atts,
-    }, sessionId: sessionId).then((resp) {
-      if (resp.payloadMap['ok'] == true) pendingAttachments.clear();
-      notifyListeners();
-      return resp;
-    });
+    return c
+        .rpc(CmdAction.sessionPrompt, {
+          if (sessionId != null) 'sessionId': sessionId,
+          if (projectId != null) 'projectId': projectId,
+          if (mid != null && mid.isNotEmpty) 'modelId': mid,
+          'prompt': text,
+          if (atts.isNotEmpty) 'attachments': atts,
+        }, sessionId: sessionId)
+        .then((resp) {
+          if (resp.payloadMap['ok'] == true) pendingAttachments.clear();
+          notifyListeners();
+          return resp;
+        });
   }
 
   /// Fetch session history from the agent (memory buffer / on-disk jsonl).
@@ -609,18 +716,41 @@ class AppState extends ChangeNotifier {
     }, sessionId: sessionId);
   }
 
+  /// Paged history always comes from the desktop, independently of live high-water IDs.
+  Future<Envelope> fetchHistoryPage(
+    String sessionId, {
+    int? beforeSeqId,
+  }) async {
+    final c = client;
+    // Preserve the existing fake/offline adapter contract used by local views.
+    if (c == null) return fetchHistory(sessionId);
+    await _ensureDesktop(c);
+    return c.rpc(CmdAction.sessionHistory, {
+      'sessionId': sessionId,
+      'limit': 200,
+      if (beforeSeqId != null) 'beforeSeqId': beforeSeqId,
+    }, sessionId: sessionId);
+  }
+
   /// Render cached events immediately (fast open), replacing the in-memory
   /// list for this session. Live events newer than the cache keep flowing in.
   void applyCached(String sessionId, List<Envelope> events) {
-    var maxSeq = 0;
-    for (final e in events) {
-      final seq = e.seqId ?? 0;
-      if (seq > maxSeq) maxSeq = seq;
-    }
-    _events[sessionId] = List<Envelope>.of(events);
-    if (maxSeq > (lastSeq[sessionId] ?? 0)) lastSeq[sessionId] = maxSeq;
-    _streaming.remove(sessionId); // 历史重置后流式缓冲不再可信
+    _mergeHistory(sessionId, events);
     notifyListeners();
+  }
+
+  void _mergeHistory(String sessionId, List<Envelope> incoming) {
+    final all = [...eventsOf(sessionId), ...incoming];
+    final canonical = all.any((e) => e.payloadMap['historyEpoch'] == 'host-v1');
+    final bySeq = <int, Envelope>{};
+    for (final e in all) {
+      if (canonical && e.payloadMap['historyEpoch'] != 'host-v1') continue;
+      if ((e.seqId ?? 0) > 0) bySeq[e.seqId!] = e;
+    }
+    final keys = bySeq.keys.toList()..sort();
+    _events[sessionId] = [for (final key in keys) bySeq[key]!];
+    lastSeq[sessionId] = keys.isEmpty ? 0 : keys.last;
+    _invalidateChanges(sessionId);
   }
 
   /// Merge newly fetched history events into the session's event list
@@ -631,29 +761,15 @@ class AppState extends ChangeNotifier {
   /// seqId (fetched wins) and sorted ascending. The merged list is persisted
   /// to the local cache with the new lastSeqId so the next open is instant.
   Future<void> applyHistory(String sessionId, List<Envelope> history) async {
-    final bySeq = <int, Envelope>{};
-    for (final e in _events[sessionId] ?? const <Envelope>[]) {
-      final seq = e.seqId ?? 0;
-      if (seq > 0) bySeq[seq] = e;
-    }
-    for (final e in history) {
-      final seq = e.seqId ?? 0;
-      if (seq > 0) bySeq[seq] = e;
-    }
-    if (bySeq.isEmpty) return;
-    final keys = bySeq.keys.toList()..sort();
-    final merged = [for (final k in keys) bySeq[k]!];
-    _events[sessionId] = merged;
-    final maxSeq = keys.last;
-    if (maxSeq > (lastSeq[sessionId] ?? 0)) lastSeq[sessionId] = maxSeq;
+    _mergeHistory(sessionId, history);
+    final merged = eventsOf(sessionId);
+    final maxSeq = lastSeq[sessionId] ?? 0;
     notifyListeners();
     // Persist merged raw events (payload objects embed seqId) for next fast open
     try {
-      await saveSessionCache(
-        sessionId,
-        maxSeq,
-        [for (final e in merged) e.payloadMap],
-      );
+      await saveSessionCache(sessionId, maxSeq, [
+        for (final e in merged) e.payloadMap,
+      ]);
     } catch (_) {
       // Cache persistence is best-effort only
     }
@@ -664,14 +780,38 @@ class AppState extends ChangeNotifier {
     final c = client;
     if (c == null) throw StateError('relay not connected');
     await _ensureDesktop(c);
-    final resp = await c.rpc(
-      CmdAction.approvalRespond,
-      {'approvalId': item.approvalId, 'approved': approved},
-      sessionId: item.sessionId,
-    );
+    final resp = await c.rpc(CmdAction.approvalRespond, {
+      'approvalId': item.approvalId,
+      'approved': approved,
+    }, sessionId: item.sessionId);
+    if (resp.payloadMap['ok'] != true) {
+      throw StateError(
+        resp.payloadMap['error']?.toString() ?? 'Approval failed',
+      );
+    }
     item.resolved = true;
     notifyListeners();
     return resp;
+  }
+
+  Future<void> respondInteraction(
+    Map<String, dynamic> request,
+    Map<String, Object?> response,
+  ) async {
+    final c = client;
+    if (c == null) throw StateError('relay not connected');
+    await _ensureDesktop(c);
+    final result = await c.rpc(CmdAction.interactionRespond, {
+      'requestId': request['id'],
+      'response': response,
+    }, sessionId: request['sessionId'] as String);
+    if (result.payloadMap['ok'] != true) {
+      throw StateError(
+        result.payloadMap['error']?.toString() ?? 'Interaction failed',
+      );
+    }
+    interactions.remove(request['id']);
+    notifyListeners();
   }
 
   /// 远程列目录
@@ -717,9 +857,12 @@ class AppState extends ChangeNotifier {
     if (resp.payloadMap['ok'] == true) {
       sessions.removeWhere((s) => s.id == sessionId);
       _events.remove(sessionId);
+      _invalidateChanges(sessionId);
+      _streaming.remove(sessionId);
       lastSeq.remove(sessionId);
       _busySessions.remove(sessionId);
       approvals.removeWhere((_, a) => a.sessionId == sessionId);
+      interactions.removeWhere((_, a) => a['sessionId'] == sessionId);
       notifyListeners();
     }
     return resp;

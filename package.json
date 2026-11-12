@@ -1,6 +1,6 @@
 {
   "name": "dsh-solo",
-  "version": "0.1.5",
+  "version": "0.1.6-rc.1",
   "private": true,
   "description": "DSH-SOLO: DeepSeek Harness 跨端协同系统（电脑端插件 + VPS 中转 + 移动端 App）",
   "workspaces": [

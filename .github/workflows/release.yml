@@ -3,7 +3,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: '已提交的版本号，例如 0.1.5；留空读取 package.json'
+        description: '已提交的版本号，例如 0.1.6-rc.1 或 0.1.6；留空读取 package.json'
         required: false
         type: string
       publish:
@@ -113,7 +113,7 @@ jobs:
         env:
           RELEASE_TAG: ${{ steps.release.outputs.tag }}
         run: |
-          printf '## Release\n\nhttps://github.com/%s/releases/tag/%s\n\nAndroid APK: https://github.com/%s/releases/latest/download/dsh-solo.apk\n' "$RELEASE_REPOSITORY" "$RELEASE_TAG" "$RELEASE_REPOSITORY" >> "$GITHUB_STEP_SUMMARY"
+          printf '## Release\n\nhttps://github.com/%s/releases/tag/%s\n\nAndroid APK: https://github.com/%s/releases/download/%s/dsh-solo.apk\n' "$RELEASE_REPOSITORY" "$RELEASE_TAG" "$RELEASE_REPOSITORY" "$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
       - name: Build-only delivery
         if: ${{ !inputs.publish }}
         run: |

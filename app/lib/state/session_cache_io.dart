@@ -8,6 +8,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:path_provider/path_provider.dart';
+import 'package:flutter/foundation.dart';
 
 import 'session_cache.dart';
 
@@ -16,6 +17,7 @@ const Duration _debounceInterval = Duration(milliseconds: 300);
 
 /// sessionId → pending write timer (whole-file rewrite debounce)
 final Map<String, Timer> _pendingWrites = {};
+final Map<String, Future<void>> _writeChains = {};
 
 /// sessionId → latest data waiting to be flushed
 final Map<String, Map<String, dynamic>> _pendingData = {};
@@ -40,7 +42,7 @@ Future<CachedSession?> loadSessionCache(String sessionId) async {
   try {
     final f = await _cacheFile(sessionId);
     if (f == null || !await f.exists()) return null;
-    final j = jsonDecode(await f.readAsString());
+    final j = await compute(_decodeCache, await f.readAsString());
     if (j is! Map) return null;
     final rawEvents = (j['events'] as List? ?? const []);
     return CachedSession(
@@ -67,13 +69,27 @@ Future<void> saveSessionCache(
     final data = _pendingData.remove(sessionId);
     _pendingWrites.remove(sessionId);
     if (data == null) return;
-    try {
-      final f = await _cacheFile(sessionId);
-      if (f == null) return;
-      await f.parent.create(recursive: true);
-      await f.writeAsString(jsonEncode(data));
-    } catch (_) {
-      // Cache write failure is non-fatal
-    }
+    final previous = _writeChains[sessionId] ?? Future<void>.value();
+    final next = previous.then((_) async {
+      try {
+        final f = await _cacheFile(sessionId);
+        if (f == null) return;
+        await f.parent.create(recursive: true);
+        final encoded = await compute(_encodeCache, data);
+        final temporary = File('${f.path}.next');
+        await temporary.writeAsString(encoded, flush: true);
+        await temporary.rename(f.path);
+      } catch (_) {
+        /* A failed cache write must not block subsequent saves. */
+      }
+    });
+    _writeChains[sessionId] = next;
+    await next;
+    if (identical(_writeChains[sessionId], next))
+      _writeChains.remove(sessionId);
   });
 }
+
+// Large histories must not encode/decode JSON on the UI isolate.
+Object? _decodeCache(String text) => jsonDecode(text);
+String _encodeCache(Map<String, dynamic> data) => jsonEncode(data);

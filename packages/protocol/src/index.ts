@@ -90,6 +90,7 @@ export interface AgentSnapshotPayload {
   models?: unknown[]
   sessions?: unknown[]
   dirTree?: DirTreeNode[]
+  pendingInteractions?: unknown[]
   timestamp: number
 }
 
@@ -128,6 +129,7 @@ export type CommandAction =
   | 'project.list'
   | 'session.prompt'
   | 'approval.respond'
+  | 'interaction.respond'
   | 'fs.list_dir'
   | 'session.rename'
   | 'session.delete'
@@ -210,6 +212,9 @@ export interface SessionHistoryData {
   sessionId: string
   /** Only return events with seqId greater than this (incremental sync); omit for full history */
   sinceSeqId?: number
+  /** Exclusive older-page cursor; limit opts into paged replies. */
+  beforeSeqId?: number
+  limit?: number
 }
 
 export interface CmdDispatchPayload<A extends CommandAction = CommandAction> {

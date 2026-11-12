@@ -1,5 +1,7 @@
 # DSH-SOLO
 
+> 测试候选版 **0.1.6-rc.1**：包含会话历史补取、滚动性能和手机审批交互修复。[安装与复测说明](docs/releases/v0.1.6-rc.1.md) · [下载候选 APK](https://github.com/wudidiandian/dsh-solo/releases/download/v0.1.6-rc.1/dsh-solo.apk)。候选版需插件与 App 一起升级；默认安装入口仍为正式版。
+
 **中文** | [English](README_EN.md)
 
 通过手机远程使用电脑上的 DeepSeek Harness：查看会话、发送任务、切换模型、传递附件，并审批需要确认的操作。

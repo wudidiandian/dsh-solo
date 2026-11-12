@@ -49,7 +49,8 @@ const sums = []
 for (const name of files) sums.push(`${createHash('sha256').update(await readFile(join(output, name))).digest('hex')}  ${name}`)
 await writeFile(join(output, 'SHA256SUMS'), sums.join('\n') + '\n')
 files.push('SHA256SUMS')
-const notes = `${marker}\n# DSH-SOLO ${version}\n\n- DeepSeek Harness 官方桌面版：插件 → 添加插件，输入 \`dsh-solo-agent\`。\n- Android：下载并安装下方 \`dsh-solo.apk\`，从“手机配对”扫码连接。\n- 离线安装插件：解压 \`dsh-solo-agent-${version}.tgz\`，选择包含 package.json 的 package 目录。\n- 校验文件：SHA256SUMS；构建来源：BUILD.json。\n\nSource: ${sourceRepository}@${sourceCommit}\n\n本工作流发布 GitHub 安装包；npm 发布和服务器部署分别执行。\n`
+const installSpec = version.includes('-') ? `dsh-solo-agent@${version}` : 'dsh-solo-agent'
+const notes = `${marker}\n# DSH-SOLO ${version}\n\n- DeepSeek Harness 官方桌面版：插件 → 添加插件，输入 \`${installSpec}\`。\n- Android：下载并安装下方 \`dsh-solo.apk\`，从“手机配对”扫码连接。\n- 离线安装插件：解压 \`dsh-solo-agent-${version}.tgz\`，选择包含 package.json 的 package 目录。\n- 校验文件：SHA256SUMS；构建来源：BUILD.json。\n\nSource: ${sourceRepository}@${sourceCommit}\n\n本工作流发布 GitHub 安装包；npm 发布和服务器部署分别执行。\n`
 let versionNotes = ''
 try { versionNotes = await readFile(resolve(root, 'docs/releases', `${tag}.md`), 'utf8') }
 catch (error) { if (error.code !== 'ENOENT') throw error }
@@ -72,5 +73,5 @@ for (const name of files) {
   if (!remoteAsset || remoteAsset.size !== (await stat(join(output, name))).size) throw new Error(`Upload verification failed: ${name}`)
 }
 // Build/upload failures leave a draft; only a complete set of assets becomes visible as latest.
-run('gh', ['release', 'edit', tag, '--repo', repository, '--draft=false', '--latest'])
+run('gh', ['release', 'edit', tag, '--repo', repository, '--draft=false', ...(version.includes('-') ? ['--prerelease', '--latest=false'] : ['--latest'])])
 console.log(`Published https://github.com/${repository}/releases/tag/${tag}`)

@@ -76,13 +76,18 @@ List<ChangeEntry> extractChanges(List<Envelope> events) {
 /// 从 tool/call 参数提取变更；非文件写入工具返回 null
 ChangeEntry? _entryFromCall(Map data) {
   final name = data['name']?.toString() ?? '';
+  if (!const {'write', 'edit', 'str_replace_editor'}.contains(name)) {
+    return null;
+  }
   final argsRaw = data['arguments'];
   if (argsRaw is! String || argsRaw.isEmpty) return null;
   try {
     final decoded = jsonDecode(argsRaw);
     if (decoded is! Map) return null;
     return _entryFromArgs(
-        name, decoded.map((k, v) => MapEntry(k.toString(), v)));
+      name,
+      decoded.map((k, v) => MapEntry(k.toString(), v)),
+    );
   } on FormatException {
     return null;
   }
@@ -101,7 +106,12 @@ ChangeEntry? _entryFromArgs(String tool, Map<String, dynamic> args) {
     final oldText = args['old_str'];
     final newText = args['new_str'];
     if (path.isEmpty || oldText is! String || newText is! String) return null;
-    return ChangeEntry(path: path, oldText: oldText, newText: newText, tool: tool);
+    return ChangeEntry(
+      path: path,
+      oldText: oldText,
+      newText: newText,
+      tool: tool,
+    );
   }
   if (tool == 'str_replace_editor') {
     final command = args['command']?.toString() ?? '';
@@ -116,7 +126,12 @@ ChangeEntry? _entryFromArgs(String tool, Map<String, dynamic> args) {
       final oldText = args['old_str'];
       final newText = args['new_str'];
       if (oldText is! String || newText is! String) return null;
-      return ChangeEntry(path: path, oldText: oldText, newText: newText, tool: tool);
+      return ChangeEntry(
+        path: path,
+        oldText: oldText,
+        newText: newText,
+        tool: tool,
+      );
     }
   }
   return null;
@@ -136,18 +151,24 @@ List<ChangeEntry> _metaDiffs(Map data) {
     final newText = hunk['newText'];
     if (path.isEmpty || newText is! String) continue;
     if (oldText != null && oldText is! String) continue;
-    out.add(ChangeEntry(
-      path: path,
-      oldText: oldText == null ? null : oldText as String,
-      newText: newText,
-      tool: 'fs',
-    ));
+    out.add(
+      ChangeEntry(
+        path: path,
+        oldText: oldText == null ? null : oldText as String,
+        newText: newText,
+        tool: 'fs',
+      ),
+    );
   }
   return out;
 }
 
 /// 行级 LCS diff（文本行数超上限时退化为“仅新增”展示）
-List<DiffLine> diffLines(String? oldText, String newText, {int maxLines = 2000}) {
+List<DiffLine> diffLines(
+  String? oldText,
+  String newText, {
+  int maxLines = 2000,
+}) {
   final newLines = newText.split('\n');
   if (oldText == null || oldText.isEmpty) {
     return [for (final l in newLines) DiffLine('added', l)];

@@ -16,7 +16,27 @@ if (process.argv[2] === '--agent') {
   const client = new SoloRelayClient({ url: process.argv[3], deviceToken: token, encryptionKey: key, backoffBaseMs: 50 })
   let callback
   let activeKey = key
-  const core = new AgentCore(client, {
+  let core
+  let interactions
+  let hostCtx
+  let desktopResolve
+  let hostAbort
+  if (process.env.DSH_TEST_HOST_CORDIS) {
+    const { Context } = await import(process.env.DSH_TEST_HOST_CORDIS)
+    const { InteractionBroker } = await import('../../packages/agent/dist/interactions.js')
+    hostCtx = new Context()
+    for (const event of ['approval/request', 'user-questions/request']) {
+      hostCtx.on(event, request => new Promise(resolve => {
+        desktopResolve = resolve
+        request.signal.addEventListener('abort', () => resolve('cancelled'), { once: true })
+      }))
+    }
+    interactions = new InteractionBroker({ changed: () => { void core?.publishSnapshot() },
+      mobileAvailable: () => client.connectedMobileCount > 0 })
+    interactions.install(hostCtx)
+  }
+  core = new AgentCore(client, {
+    interactions,
     rotateDeviceToken: async nextToken => { activeKey = randomBytes(32).toString('base64url'); client.reconnectWithToken(nextToken, activeKey) },
     deviceToken: token, stateDir, historyDir: join(stateDir, 'history'),
     services: {
@@ -37,6 +57,24 @@ if (process.argv[2] === '--agent') {
   core.start()
   client.start()
   for await (const _line of lines) {
+    if (_line === 'approval-request' || _line === 'question-request') {
+      if (!hostCtx) throw new Error('Real Host SDK fixture was not configured')
+      const approval = _line === 'approval-request'
+      hostAbort = new AbortController()
+      const request = { agent: { sessionId: 'created-session' }, signal: hostAbort.signal,
+        ...(approval ? { toolName: 'pwsh', reason: 'E2EE_APPROVAL_SENTINEL' } : {
+          questions: [{ id: 'page', question: 'E2EE_QUESTION_SENTINEL', options: [{ label: 'Dashboard' }, { label: 'Game' }] }],
+        }),
+      }
+      void hostCtx.waterfall({}, approval ? 'approval/request' : 'user-questions/request', request,
+        () => approval ? 'unavailable' : Promise.reject(new Error('No answerer')))
+        .then(outcome => process.stdout.write(JSON.stringify({ interactionSettled: true, outcome }) + '\n'),
+          () => process.stdout.write('{"interactionCancelled":true}\n'))
+      process.stdout.write('{"interactionRequested":true}\n')
+      continue
+    }
+    if (_line === 'desktop-reject') { desktopResolve?.('rejected'); continue }
+    if (_line === 'cancel-interaction') { hostAbort?.abort(); continue }
     if (_line === 'burst') {
       callback?.('created-session', { kind: 'turn/start' })
       for (let round = 0; round < 20; round++) {
@@ -55,7 +93,7 @@ if (process.argv[2] === '--agent') {
       continue
     }
     if (_line === 'rotate') { const token = await core.resetDeviceToken(); process.stdout.write(JSON.stringify({ token, key: activeKey }) + '\n'); continue }
-    core.stop(); client.stop(); await rm(stateDir, { recursive: true, force: true }); process.exit(0)
+    interactions?.dispose(); core.stop(); client.stop(); await rm(stateDir, { recursive: true, force: true }); process.exit(0)
   }
 } else {
   for await (const line of lines) {

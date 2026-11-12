@@ -194,45 +194,54 @@ class RelayClient {
       );
       return;
     }
-    unawaited(
-      rpc('session.history', {
+    unawaited(() async {
+      int? before;
+      try {
+        while (isOpen) {
+          final response = await rpc('session.history', {
             'sessionId': sessionId,
-            'sinceSeqId': lastSeqId,
-          }, sessionId: sessionId)
-          .then((response) {
-            final result = response.payloadMap['result'];
-            if (response.payloadMap['ok'] != true ||
-                result is! Map ||
-                result['events'] is! List)
-              return;
-            onEnvelope?.call(
-              makeEnvelope(
-                MsgType.syncCatchup,
-                {
-                  'sessionId': sessionId,
-                  'fromSeqId': lastSeqId,
-                  'gap': false,
-                  // session.history returns event payloads, whereas sync.catchup
-                  // carries envelopes. Preserve session/sequence when adapting.
-                  'events': [
-                    for (final raw in result['events'] as List)
-                      if (raw is Map)
-                        Envelope(
-                          type: MsgType.sessionEvent,
-                          sessionId: sessionId,
-                          seqId: (raw['seqId'] as num?)?.toInt(),
-                          payload: Map<String, dynamic>.from(raw),
-                        ).toJson(),
-                  ],
-                },
-                {'sessionId': sessionId},
-              ),
-            );
-          })
-          .catchError((Object _) {
-            /* Reconnect/history refresh retries on the next connection. */
-          }),
-    );
+            'limit': 200,
+            if (before != null) 'beforeSeqId': before,
+          }, sessionId: sessionId);
+          final result = response.payloadMap['result'];
+          if (response.payloadMap['ok'] != true ||
+              result is! Map ||
+              result['events'] is! List)
+            return;
+          final rawEvents = result['events'] as List;
+          onEnvelope?.call(
+            makeEnvelope(
+              MsgType.syncCatchup,
+              {
+                'sessionId': sessionId,
+                'fromSeqId': lastSeqId,
+                'gap': false,
+                'events': [
+                  for (final raw in rawEvents)
+                    if (raw is Map)
+                      Envelope(
+                        type: MsgType.sessionEvent,
+                        sessionId: sessionId,
+                        seqId: (raw['seqId'] as num?)?.toInt(),
+                        payload: Map<String, dynamic>.from(raw),
+                      ).toJson(),
+                ],
+              },
+              {'sessionId': sessionId},
+            ),
+          );
+          final cursor = (result['beforeSeqId'] as num?)?.toInt();
+          if (result['hasMore'] != true ||
+              cursor == null ||
+              cursor <= lastSeqId ||
+              (before != null && cursor >= before))
+            return;
+          before = cursor;
+        }
+      } catch (_) {
+        /* Retry at the next handshake; opening the view can also repair history. */
+      }
+    }());
   }
 
   // ---------------------------------------------------------------------------

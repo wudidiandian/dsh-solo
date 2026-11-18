@@ -12,7 +12,7 @@
 
 ## 安装
 
-正式版在 DeepSeek Harness 桌面版的 **插件 → 添加插件** 中输入 `dsh-solo-agent` 即可安装；不指定版本时使用 npm 的 `latest` 标签。固定本版可输入 `dsh-solo-agent@0.1.5`。安装源选择官方 npm 源，镜像可能同步延迟。已有本地安装的同名插件时先卸载，再按 npm 包名安装；保留配对数据并完全退出、重启桌面版。
+正式版在 DeepSeek Harness 桌面版的 **插件 → 添加插件** 中输入 `dsh-solo-agent` 即可安装；不指定版本时使用 npm 的 `latest` 标签。固定本版可输入 `dsh-solo-agent@0.1.6`。安装源选择官方 npm 源，镜像可能同步延迟。已有本地安装的同名插件时先卸载，再按 npm 包名安装；保留配对数据并完全退出、重启桌面版。
 
 本地安装时，将官方 `.tgz` 解压，进入 **插件 → 添加插件**，输入包含 `package.json` 的 `package` 文件夹绝对路径，例如 `D:/DSH-SOLO/plugin/package`，点击安装并立即启用。不要只选择其中的 JavaScript 文件；安装后请保留该目录。已有同名插件时先卸载再安装，用户主目录中的 `.dsh-solo` 配对数据通常可保留。
 
@@ -61,6 +61,6 @@ MIT License.
 
 ## 端到端加密 / End-to-end encryption (0.1.5)
 
-本版本要求配套 0.1.5 App 和加密中转；旧客户端及旧二维码不兼容，且不会自动回退到明文。升级中转后更新两端，并扫描新版二维码或复制完整加密配对码，不能只复制连接令牌。独立加密凭据仅通过电脑本机配对页或宿主所有者通道交给 App，不发送给中转。
+使用配套 App 和支持端到端加密的中转；从 0.1.4 升级时旧客户端及旧二维码不兼容，且不会自动回退到明文。升级中转后更新两端，并扫描新版二维码或复制完整加密配对码，不能只复制连接令牌。独立加密凭据仅通过电脑本机配对页或宿主所有者通道交给 App，不发送给中转。
 
-This release requires the matching 0.1.5 app and an E2EE-capable relay. Upgrade the relay first, then both clients, and pair with a new QR code. Legacy QR codes and routing tokens alone cannot establish an encrypted session. There is no automatic plaintext fallback. See the repository's docs/E2EE.md and deploy/E2EE_UPGRADE.md for security boundaries and upgrade instructions.
+Use the companion app and an E2EE-capable relay. When upgrading from 0.1.4, upgrade the relay first, then both clients, and pair with a new QR code. Legacy QR codes and routing tokens alone cannot establish an encrypted session. There is no automatic plaintext fallback. See the repository's docs/E2EE.md and deploy/E2EE_UPGRADE.md for security boundaries and upgrade instructions.

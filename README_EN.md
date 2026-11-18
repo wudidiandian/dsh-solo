@@ -1,12 +1,12 @@
 # DSH-SOLO
 
-> Release candidate **0.1.6-rc.1** includes history synchronization, scrolling performance, and mobile approval/question fixes. [Testing notes](docs/releases/v0.1.6-rc.1.md) · [Candidate APK](https://github.com/wudidiandian/dsh-solo/releases/download/v0.1.6-rc.1/dsh-solo.apk). Upgrade both the plugin and App; default installation still uses the stable release.
+> **Version 0.1.6 is now stable**, with history synchronization, smoother scrolling, mobile approvals and questions, and China/global gateway selection. [Release packages](https://github.com/wudidiandian/dsh-solo/releases/tag/v0.1.6) · [Download Android APK](https://github.com/wudidiandian/dsh-solo/releases/latest/download/dsh-solo.apk). Update both the desktop plugin and mobile app.
 
 [中文](README.md) | **English**
 
 Use DeepSeek Harness on your computer from an Android phone: follow sessions, send tasks, select models, transfer attachments and respond to approvals.
 
-> **0.1.5 implements phone-to-plugin end-to-end encryption.** Upgrading from `0.1.4` requires matching relay, plugin and app versions, followed by pairing with a new QR code. Self-hosters should read the [upgrade and rollback guide](deploy/E2EE_UPGRADE.md).
+> **Phone-to-plugin communication supports end-to-end encryption.** Upgrading from `0.1.4` requires matching relay, plugin and app versions, followed by pairing with a new QR code. Self-hosters should read the [upgrade and rollback guide](deploy/E2EE_UPGRADE.md).
 
 ## Install
 
@@ -22,7 +22,7 @@ dsh-solo-agent
 
 Select **Enable now**. If **Phone pairing** does not appear in the sidebar, fully quit the desktop app through its application menu and reopen it; closing the window may only hide it to the tray.
 
-Without a version suffix, installation uses npm's `latest` stable tag. To pin a version, enter `dsh-solo-agent@0.1.5`. If the package cannot be found, switch to the **official npm registry** while mirrors catch up. Existing installations need an update or reinstall as prompted by the host; pairing data in your home directory's `.dsh-solo` can normally be retained.
+Without a version suffix, installation uses npm's `latest` stable tag. To pin a version, enter `dsh-solo-agent@0.1.6`. If the package cannot be found, switch to the **official npm registry** while mirrors catch up. Existing installations need an update or reinstall as prompted by the host; pairing data in your home directory's `.dsh-solo` can normally be retained.
 
 <details>
 <summary>Desktop plugin installation screenshots</summary>

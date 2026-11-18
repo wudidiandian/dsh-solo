@@ -1,12 +1,12 @@
 # DSH-SOLO
 
-> 测试候选版 **0.1.6-rc.1**：包含会话历史补取、滚动性能和手机审批交互修复。[安装与复测说明](docs/releases/v0.1.6-rc.1.md) · [下载候选 APK](https://github.com/wudidiandian/dsh-solo/releases/download/v0.1.6-rc.1/dsh-solo.apk)。候选版需插件与 App 一起升级；默认安装入口仍为正式版。
+> **正式版 0.1.6** 已发布，包含会话历史同步、滚动性能优化、手机审批与交互支持，以及国内和国际节点选择。[查看发布包](https://github.com/wudidiandian/dsh-solo/releases/tag/v0.1.6) · [下载 Android APK](https://github.com/wudidiandian/dsh-solo/releases/latest/download/dsh-solo.apk)。建议将电脑插件和手机 App 一起更新。
 
 **中文** | [English](README_EN.md)
 
 通过手机远程使用电脑上的 DeepSeek Harness：查看会话、发送任务、切换模型、传递附件，并审批需要确认的操作。
 
-> **0.1.5 已实现手机 App ↔ 电脑插件端到端加密。** 从 `0.1.4` 升级时，中转、插件与 App 需要配套更新，并扫描新版二维码重新配对。自建用户请先阅读 [升级与回滚说明](deploy/E2EE_UPGRADE.md)。
+> **手机 App 与电脑插件之间支持端到端加密。** 从 `0.1.4` 升级时，中转、插件与 App 需要配套更新，并扫描新版二维码重新配对。自建用户请先阅读 [升级与回滚说明](deploy/E2EE_UPGRADE.md)。
 
 ## 安装与使用
 
@@ -22,7 +22,7 @@ dsh-solo-agent
 
 安装后点击 **立即启用**。如果左侧没有出现 **手机配对**，通过 **应用 → 退出** 完全退出桌面版，再重新打开；只关闭窗口可能隐藏到托盘。
 
-省略版本号时安装 npm `latest` 标签对应的正式版；需要指定版本时可输入 `dsh-solo-agent@0.1.5`。如果提示找不到插件，请先将安装源切换到 **官方 npm 源**，国内镜像可能尚未同步。已安装的插件需要按宿主提示更新，或卸载后重新安装；通常可保留用户主目录 `.dsh-solo` 中的配对数据。
+省略版本号时安装 npm `latest` 标签对应的正式版；需要指定版本时可输入 `dsh-solo-agent@0.1.6`。如果提示找不到插件，请先将安装源切换到 **官方 npm 源**，国内镜像可能尚未同步。已安装的插件需要按宿主提示更新，或卸载后重新安装；通常可保留用户主目录 `.dsh-solo` 中的配对数据。
 
 <details>
 <summary>查看插件安装图解（点击展开）</summary>

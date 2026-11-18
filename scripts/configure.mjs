@@ -13,8 +13,17 @@ const config = JSON.parse(text)
 const url = new URL(config.relayUrl)
 if (!['ws:', 'wss:'].includes(url.protocol) || url.username || url.password || url.hash) throw new Error('Invalid relayUrl')
 if (!/^[a-zA-Z0-9.-]+$/.test(config.relayDomain || '')) throw new Error('Invalid relayDomain')
+let intlUrl = ''
+if (config.relayUrlIntl) {
+  const parsed = new URL(config.relayUrlIntl)
+  if (!['ws:', 'wss:'].includes(parsed.protocol) || parsed.username || parsed.password || parsed.hash) throw new Error('Invalid relayUrlIntl')
+  intlUrl = config.relayUrlIntl
+}
 await mkdir(resolve(root, '.generated'), { recursive: true })
 await writeFile(resolve(root, 'packages/agent/src/generated-defaults.ts'), 'export const defaultRelayUrl = ' + JSON.stringify(config.relayUrl) + '\n')
-await writeFile(resolve(root, '.generated/flutter-defines.json'), JSON.stringify({ DSH_DEFAULT_RELAY: config.relayUrl, DSH_LEGACY_RELAY: config.legacyRelayUrl || '' }))
+// DSH_INTL_RELAY 仅在配置了国际节点时注入，避免空串覆盖 App 侧 defaultValue
+const defines = { DSH_DEFAULT_RELAY: config.relayUrl, DSH_LEGACY_RELAY: config.legacyRelayUrl || '' }
+if (intlUrl) defines.DSH_INTL_RELAY = intlUrl
+await writeFile(resolve(root, '.generated/flutter-defines.json'), JSON.stringify(defines))
 await writeFile(resolve(root, '.generated/deploy.env'), 'RELAY_DOMAIN=' + config.relayDomain + '\n')
 console.log('Distribution configuration generated (values omitted).')

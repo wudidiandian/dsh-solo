@@ -1,0 +1,45 @@
+# dsh-solo relay 部署（本地镜像版：无需源码，配合 docker load 使用）
+#
+# 适用：不推送代码、只把本地构建好的 relay 镜像传到服务器测试。
+# 用法见 deploy/IMAGE_DEPLOY.md。
+
+services:
+  relay:
+    image: dsh-solo/relay:latest   # 由 docker load 导入
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8787:8787"
+    command:
+      - "-addr"
+      - "0.0.0.0:8787"
+      - "--trust-proxy"
+      - "--max-rooms"
+      - "64"
+      - "--max-conn-per-ip"
+      - "8"
+      - "--max-upload"
+      - "10485760"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8787/healthz || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  caddy:
+    image: caddy:2-alpine
+    environment:
+      RELAY_DOMAIN: ${RELAY_DOMAIN:?Set RELAY_DOMAIN via --env-file .env}
+    restart: unless-stopped
+    depends_on:
+      - relay
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile.docker:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

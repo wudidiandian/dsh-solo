@@ -29,14 +29,23 @@ class _HomePageState extends State<HomePage> {
   String? _encryptionKey;
   String? _pairedToken;
 
+  /// 当前网关选择：'cn' 国内 / 'intl' 国际（默认）/ null = 扫码指定的自定义节点
+  String? _gateway;
+  Future<void> _saveQueue = Future<void>.value();
+
   @override
   void initState() {
     super.initState();
     // 预填顺序：已保存配置 > 内置默认 relay 地址；令牌由扫码或手输填入
-    _urlCtrl = TextEditingController(text: widget.initialConfig?.relayUrl ?? defaultRelayUrl);
-    _tokenCtrl = TextEditingController(text: widget.initialConfig?.deviceToken ?? '');
+    _urlCtrl = TextEditingController(
+      text: widget.initialConfig?.relayUrl ?? intlRelayUrl,
+    );
+    _tokenCtrl = TextEditingController(
+      text: widget.initialConfig?.deviceToken ?? '',
+    );
     _encryptionKey = widget.initialConfig?.encryptionKey;
     _pairedToken = widget.initialConfig?.deviceToken;
+    _gateway = gatewayForUrl(widget.initialConfig?.relayUrl ?? intlRelayUrl);
     // 恢复上次选中的模型；之后每次切换都立即持久化（best-effort）
     final savedModelId = widget.initialConfig?.modelId;
     if (savedModelId != null && savedModelId.isNotEmpty) {
@@ -44,12 +53,9 @@ class _HomePageState extends State<HomePage> {
     }
     widget.state.onSelectedModelChanged = (id) async {
       try {
-        final c = await AppConfig.load();
-        if (c == null) return;
-        c.modelId = id;
-        await c.save();
+        await _saveCurrentConfig();
       } catch (_) {
-        // 持久化失败不影响使用
+        /* best-effort */
       }
     };
     // 已保存过配置则自动连接
@@ -65,33 +71,82 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  Future<void> _connect() async {
+  Future<bool> _connect() async {
     final pasted = parsePairUri(_tokenCtrl.text.trim());
     if (pasted != null) {
-      _urlCtrl.text = pasted.relayUrl; _tokenCtrl.text = pasted.token;
-      _pairedToken = pasted.token; _encryptionKey = pasted.encryptionKey;
+      _urlCtrl.text = pasted.relayUrl;
+      _tokenCtrl.text = pasted.token;
+      _pairedToken = pasted.token;
+      _encryptionKey = pasted.encryptionKey;
     }
     final url = _urlCtrl.text.trim();
     final token = _tokenCtrl.text.trim();
     final key = token == _pairedToken ? _encryptionKey : null;
-    if (url.isEmpty || token.isEmpty) return;
-    widget.state.connect(RelayClient(url: url, deviceToken: token, encryptionKey: key));
-    if (key == null) return;
-    try { await AppConfig(
-      relayUrl: url,
+    if (url.isEmpty) return false;
+    // Persist a node even before pairing; never replace valid stored credentials
+    // with an incomplete or unverified manual token.
+    if (token.isNotEmpty && key == null) {
+      widget.state.connect(RelayClient(url: url, deviceToken: token));
+      return false;
+    }
+    try {
+      await _saveCurrentConfig();
+    } catch (_) {
+      if (mounted)
+        _toast('无法安全保存连接设置，请重试 / Unable to save connection settings');
+      return false;
+    }
+    if (!mounted ||
+        url != _urlCtrl.text.trim() ||
+        token != _tokenCtrl.text.trim())
+      return false;
+    if (token.isNotEmpty) {
+      widget.state.connect(
+        RelayClient(url: url, deviceToken: token, encryptionKey: key),
+      );
+    }
+    return true;
+  }
+
+  Future<void> _saveCurrentConfig() {
+    final token = _tokenCtrl.text.trim();
+    final key = token == _pairedToken ? _encryptionKey : null;
+    if (token.isNotEmpty && key == null) return Future<void>.value();
+    final config = AppConfig(
+      relayUrl: _urlCtrl.text.trim(),
       deviceToken: token,
       encryptionKey: key,
       modelId: widget.state.selectedModelId,
-    ).save(); } catch (_) {
-      widget.state.client?.stop();
-      if (mounted) _toast('无法安全保存配对凭据，请重新配对 / Secure storage unavailable');
-    }
+    );
+    // Serialize writes so rapid node changes cannot leave an older choice saved.
+    final next = _saveQueue
+        .catchError((Object _) {})
+        .then((_) => config.save());
+    _saveQueue = next;
+    return next;
+  }
+
+  /// Save and connect the selected node; both peers must use the same relay.
+  Future<void> _switchGateway(String? g) async {
+    final url = urlForGateway(g);
+    if (url == null || url == _urlCtrl.text.trim()) return;
+    setState(() {
+      _gateway = g;
+      _urlCtrl.text = url;
+    });
+    final saved = await _connect();
+    if (mounted && saved) _toast(AppL10n.i.gatewaySwitched);
   }
 
   void _openSettings() {
-    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => SettingsPage(
-      state: widget.state, onConfigureConnection: _openConnectionSettings,
-    )));
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SettingsPage(
+          state: widget.state,
+          onConfigureConnection: _openConnectionSettings,
+        ),
+      ),
+    );
   }
 
   Future<void> _openConnectionSettings() async {
@@ -100,44 +155,60 @@ class _HomePageState extends State<HomePage> {
     String? scannedUrl;
     String? scannedKey;
     String? scannedToken;
+    // 弹窗内的网关选择（确定后才应用；扫码地址优先于手动选择）
+    String? dlgGateway = _gateway;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
         title: Text(AppL10n.i.connectSettings),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: tokenCtrl,
-              decoration: InputDecoration(
-                labelText: AppL10n.i.deviceTokenLabel,
-                border: const OutlineInputBorder(),
+        content: StatefulBuilder(
+          builder: (ctx, setDlgState) => Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _GatewayPicker(
+                gateway: dlgGateway,
+                onChanged: (g) => setDlgState(() => dlgGateway = g),
               ),
-            ),
-            // 扫码配对仅移动端（web 无相机插件）
-            if (!kIsWeb)
-              Align(
-                alignment: Alignment.centerLeft,
-                child: TextButton.icon(
-                  onPressed: () async {
-                    final info = await Navigator.of(ctx).push<PairInfo>(
-                      MaterialPageRoute(builder: (_) => const PairScanPage()),
-                    );
-                    if (info != null) {
-                      scannedUrl = info.relayUrl;
-                      scannedKey = info.encryptionKey;
-                      scannedToken = info.token;
-                      tokenCtrl.text = info.token;
-                    }
-                  },
-                  icon: const Icon(Icons.qr_code_scanner),
-                  label: Text(AppL10n.i.scanPair),
+              const SizedBox(height: 12),
+              TextField(
+                controller: tokenCtrl,
+                decoration: InputDecoration(
+                  labelText: AppL10n.i.deviceTokenLabel,
+                  border: const OutlineInputBorder(),
                 ),
               ),
-          ],
+              // 扫码配对仅移动端（web 无相机插件）
+              if (!kIsWeb)
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: () async {
+                      final info = await Navigator.of(ctx).push<PairInfo>(
+                        MaterialPageRoute(builder: (_) => const PairScanPage()),
+                      );
+                      if (info != null) {
+                        scannedUrl = info.relayUrl;
+                        scannedKey = info.encryptionKey;
+                        scannedToken = info.token;
+                        tokenCtrl.text = info.token;
+                        // 扫码地址优先：回显其对应网关（自定义地址显示为「配对节点」）
+                        setDlgState(
+                          () => dlgGateway = gatewayForUrl(info.relayUrl),
+                        );
+                      }
+                    },
+                    icon: const Icon(Icons.qr_code_scanner),
+                    label: Text(AppL10n.i.scanPair),
+                  ),
+                ),
+            ],
+          ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(AppL10n.i.cancel)),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(AppL10n.i.cancel),
+          ),
           FilledButton(
             onPressed: () => Navigator.pop(ctx, true),
             child: Text(AppL10n.i.saveAndConnect),
@@ -147,8 +218,19 @@ class _HomePageState extends State<HomePage> {
     );
     if (ok == true) {
       setState(() {
-        if (scannedUrl != null) _urlCtrl.text = scannedUrl!;
-        if (scannedKey != null) { _encryptionKey = scannedKey; _pairedToken = scannedToken; }
+        if (scannedUrl != null) {
+          _urlCtrl.text = scannedUrl!;
+          _gateway = gatewayForUrl(scannedUrl);
+        } else if (dlgGateway != _gateway) {
+          // 手动选择的网关：覆盖为内置节点地址
+          _gateway = dlgGateway;
+          final url = urlForGateway(dlgGateway);
+          if (url != null) _urlCtrl.text = url;
+        }
+        if (scannedKey != null) {
+          _encryptionKey = scannedKey;
+          _pairedToken = scannedToken;
+        }
         _tokenCtrl.text = tokenCtrl.text.trim();
       });
       await _connect();
@@ -157,24 +239,27 @@ class _HomePageState extends State<HomePage> {
 
   /// 首次配置页的扫码入口：relayUrl 静默写入内部值（UI 不展示），令牌回填并提示连接
   Future<void> _scanPair() async {
-    final info = await Navigator.of(context).push<PairInfo>(
-      MaterialPageRoute(builder: (_) => const PairScanPage()),
-    );
+    final info = await Navigator.of(
+      context,
+    ).push<PairInfo>(MaterialPageRoute(builder: (_) => const PairScanPage()));
     if (info == null) return;
     setState(() {
       _urlCtrl.text = info.relayUrl;
       _tokenCtrl.text = info.token;
       _encryptionKey = info.encryptionKey;
       _pairedToken = info.token;
+      _gateway = gatewayForUrl(info.relayUrl);
     });
     _toast(AppL10n.i.qrRecognized);
   }
 
   void _openSession(BuildContext context, String? sessionId) {
     if (!widget.state.isDesktopConnected) return;
-    Navigator.of(context).push(MaterialPageRoute<void>(
-      builder: (_) => SessionPage(state: widget.state, sessionId: sessionId),
-    ));
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => SessionPage(state: widget.state, sessionId: sessionId),
+      ),
+    );
   }
 
   /// 重命名会话（弹输入框 → session.rename RPC）
@@ -194,15 +279,22 @@ class _HomePageState extends State<HomePage> {
           onSubmitted: (v) => Navigator.pop(ctx, v),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx), child: Text(AppL10n.i.cancel)),
-          FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text.trim()), child: Text(AppL10n.i.confirm)),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(AppL10n.i.cancel),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text.trim()),
+            child: Text(AppL10n.i.confirm),
+          ),
         ],
       ),
     );
     if (newTitle == null || newTitle.isEmpty) return;
     try {
       final resp = await widget.state.renameSession(s.id, newTitle);
-      if (resp.payloadMap['ok'] != true) _toast(AppL10n.i.renameFailed(resp.payloadMap['error']));
+      if (resp.payloadMap['ok'] != true)
+        _toast(AppL10n.i.renameFailed(resp.payloadMap['error']));
     } catch (e) {
       _toast(AppL10n.i.renameError(e));
     }
@@ -216,7 +308,10 @@ class _HomePageState extends State<HomePage> {
         title: Text(AppL10n.i.deleteSessionTitle),
         content: Text(AppL10n.i.deleteConfirm(s.displayTitle)),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: Text(AppL10n.i.cancel)),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(AppL10n.i.cancel),
+          ),
           FilledButton(
             style: FilledButton.styleFrom(backgroundColor: Colors.red),
             onPressed: () => Navigator.pop(ctx, true),
@@ -241,7 +336,9 @@ class _HomePageState extends State<HomePage> {
   void _toast(String msg) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(msg), duration: const Duration(seconds: 2)));
+      ..showSnackBar(
+        SnackBar(content: Text(msg), duration: const Duration(seconds: 2)),
+      );
   }
 
   @override
@@ -271,13 +368,19 @@ class _HomePageState extends State<HomePage> {
                   color: Colors.amber.shade100,
                   child: ListTile(
                     dense: true,
-                    leading: const Icon(Icons.gpp_maybe_outlined, color: Colors.deepOrange),
-                    title: Text(AppL10n.i.pendingApprovals(state.pendingApprovalCount),
-                        style: const TextStyle(fontWeight: FontWeight.bold)),
+                    leading: const Icon(
+                      Icons.gpp_maybe_outlined,
+                      color: Colors.deepOrange,
+                    ),
+                    title: Text(
+                      AppL10n.i.pendingApprovals(state.pendingApprovalCount),
+                      style: const TextStyle(fontWeight: FontWeight.bold),
+                    ),
                     subtitle: Text(AppL10n.i.tapToReview),
                     onTap: () {
-                      final first =
-                          state.approvals.values.firstWhere((a) => !a.resolved);
+                      final first = state.approvals.values.firstWhere(
+                        (a) => !a.resolved,
+                      );
                       _openSession(context, first.sessionId);
                     },
                   ),
@@ -293,6 +396,8 @@ class _HomePageState extends State<HomePage> {
                     : _ConnectForm(
                         state: state,
                         tokenCtrl: _tokenCtrl,
+                        gateway: _gateway,
+                        onGatewayChanged: (g) => _switchGateway(g),
                         onSubmit: () => _connect(),
                         onScan: _scanPair,
                       ),
@@ -321,42 +426,59 @@ class _StatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (Color color, String label) = switch (state.relayStatus) {
-      RelayStatus.open when state.isDesktopConnected => (Colors.green, AppL10n.i.statusOpen),
-      RelayStatus.open when state.checkingDesktop => (Colors.orange, AppL10n.i.statusCheckingDesktop),
+      RelayStatus.open when state.isDesktopConnected => (
+        Colors.green,
+        AppL10n.i.statusOpen,
+      ),
+      RelayStatus.open when state.checkingDesktop => (
+        Colors.orange,
+        AppL10n.i.statusCheckingDesktop,
+      ),
       RelayStatus.open => (Colors.orange, AppL10n.i.statusDesktopOffline),
       RelayStatus.connecting => (Colors.orange, AppL10n.i.statusConnecting),
       RelayStatus.fatal => (Colors.red, AppL10n.i.statusAuthFailed),
       RelayStatus.closed => (Colors.orange, AppL10n.i.statusDisconnected),
       RelayStatus.idle => (Colors.grey, AppL10n.i.statusIdle),
     };
-    return Row(children: [
-      if (state.client?.isEndToEndEncrypted == true && state.isDesktopConnected)
-        Tooltip(message: AppL10n.i.isEn ? 'End-to-end encrypted' : '端到端加密', child: Icon(Icons.lock_outline, size: 15, color: color))
-      else
-        CircleAvatar(radius: 5, backgroundColor: color),
-      const SizedBox(width: 6),
-      Text(label, style: const TextStyle(fontSize: 13)),
-    ]);
+    return Row(
+      children: [
+        if (state.client?.isEndToEndEncrypted == true &&
+            state.isDesktopConnected)
+          Tooltip(
+            message: AppL10n.i.isEn ? 'End-to-end encrypted' : '端到端加密',
+            child: Icon(Icons.lock_outline, size: 15, color: color),
+          )
+        else
+          CircleAvatar(radius: 5, backgroundColor: color),
+        const SizedBox(width: 6),
+        Text(label, style: const TextStyle(fontSize: 13)),
+      ],
+    );
   }
 }
 
-/// 未连接时显示的设置面板（服务器地址已内置，不展示）
+/// 未连接时显示的设置面板（具体服务器地址不展示，仅展示网关选择）
 class _ConnectForm extends StatelessWidget {
   const _ConnectForm({
     required this.state,
     required this.tokenCtrl,
+    required this.gateway,
+    required this.onGatewayChanged,
     required this.onSubmit,
     required this.onScan,
   });
 
   final AppState state;
   final TextEditingController tokenCtrl;
+  final String? gateway;
+  final ValueChanged<String?> onGatewayChanged;
   final VoidCallback onSubmit;
   final Future<void> Function() onScan;
 
   @override
   Widget build(BuildContext context) {
-    final connecting = state.relayStatus == RelayStatus.connecting ||
+    final connecting =
+        state.relayStatus == RelayStatus.connecting ||
         (!state.isDesktopConnected && state.checkingDesktop);
     return Center(
       child: SingleChildScrollView(
@@ -369,11 +491,17 @@ class _ConnectForm extends StatelessWidget {
             children: [
               const Icon(Icons.phonelink_setup, size: 64),
               const SizedBox(height: 12),
-              Text(AppL10n.i.connectTitle, textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.headlineSmall),
+              Text(
+                AppL10n.i.connectTitle,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.headlineSmall,
+              ),
               const SizedBox(height: 8),
-              Text(AppL10n.i.connectHint,
-                  textAlign: TextAlign.center, style: Theme.of(context).textTheme.bodySmall),
+              Text(
+                AppL10n.i.connectHint,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
               const SizedBox(height: 24),
               TextField(
                 controller: tokenCtrl,
@@ -383,6 +511,13 @@ class _ConnectForm extends StatelessWidget {
                   prefixIcon: const Icon(Icons.key),
                 ),
               ),
+              const SizedBox(height: 16),
+              _GatewayPicker(
+                gateway: gateway,
+                enabled: !connecting,
+                onChanged: onGatewayChanged,
+              ),
+              const SizedBox(height: 8),
               // 扫码配对仅移动端（web 无相机插件）
               if (!kIsWeb)
                 TextButton.icon(
@@ -394,15 +529,24 @@ class _ConnectForm extends StatelessWidget {
               FilledButton.icon(
                 onPressed: connecting ? null : onSubmit,
                 icon: connecting
-                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2))
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
                     : const Icon(Icons.link),
-                label: Text(connecting ? AppL10n.i.connecting : AppL10n.i.connect),
+                label: Text(
+                  connecting ? AppL10n.i.connecting : AppL10n.i.connect,
+                ),
               ),
               if (state.desktopError != null)
                 Padding(
                   padding: const EdgeInsets.only(top: 12),
-                  child: Text(state.desktopError!, textAlign: TextAlign.center,
-                      style: const TextStyle(color: Colors.red)),
+                  child: Text(
+                    state.desktopError!,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(color: Colors.red),
+                  ),
                 ),
               if (state.relayError != null)
                 Padding(
@@ -419,6 +563,50 @@ class _ConnectForm extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// 网关节点选择器：国际（默认）/ 国内两段式选择；
+/// 扫码指定的自定义地址显示为「配对节点」，不展示完整 URL。
+class _GatewayPicker extends StatelessWidget {
+  const _GatewayPicker({
+    required this.gateway,
+    required this.onChanged,
+    this.enabled = true,
+  });
+
+  final String? gateway;
+  final bool enabled;
+  final ValueChanged<String?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final custom = gateway != 'cn' && gateway != 'intl';
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          AppL10n.i.gatewayLabel,
+          style: Theme.of(context).textTheme.labelMedium,
+        ),
+        const SizedBox(height: 6),
+        SegmentedButton<String>(
+          segments: [
+            ButtonSegment(value: 'intl', label: Text(AppL10n.i.gatewayINTL)),
+            ButtonSegment(value: 'cn', label: Text(AppL10n.i.gatewayCN)),
+          ],
+          selected: {if (!custom) gateway!},
+          onSelectionChanged: enabled ? (s) => onChanged(s.first) : null,
+        ),
+        if (custom) ...[
+          const SizedBox(height: 4),
+          Text(
+            AppL10n.i.gatewayPair,
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+        ],
+      ],
     );
   }
 }
@@ -443,21 +631,35 @@ class _SnapshotView extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 88),
       children: [
         if (state.dirTree.isNotEmpty) ...[
-          _SectionHeader(icon: Icons.folder_outlined, label: AppL10n.i.pcDirectory),
+          _SectionHeader(
+            icon: Icons.folder_outlined,
+            label: AppL10n.i.pcDirectory,
+          ),
           ...state.dirTree.map((n) => _DirTile(node: n, state: state)),
         ],
-        _SectionHeader(icon: Icons.smart_toy_outlined, label: AppL10n.i.sessions),
+        _SectionHeader(
+          icon: Icons.smart_toy_outlined,
+          label: AppL10n.i.sessions,
+        ),
         if (state.sessions.isEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 32),
-            child: Column(mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.inbox, size: 40, color: Colors.grey),
-              const SizedBox(height: 8),
-              Text(AppL10n.i.noSessions, style: const TextStyle(color: Colors.grey)),
-              const SizedBox(height: 4),
-              Text(AppL10n.i.noSessionsHint,
-                  style: const TextStyle(color: Colors.grey, fontSize: 12)),
-            ]),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.inbox, size: 40, color: Colors.grey),
+                const SizedBox(height: 8),
+                Text(
+                  AppL10n.i.noSessions,
+                  style: const TextStyle(color: Colors.grey),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  AppL10n.i.noSessionsHint,
+                  style: const TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+              ],
+            ),
           )
         else
           ...state.sessions.map((s) {
@@ -471,22 +673,29 @@ class _SnapshotView extends StatelessWidget {
                   isFromApp ? Icons.smartphone : Icons.smart_toy_outlined,
                   color: accent,
                 ),
-                title: Row(children: [
-                  Expanded(
-                    child: Text(s.displayTitle,
-                        maxLines: 1, overflow: TextOverflow.ellipsis),
-                  ),
-                  // 回合运行中徽标（turn/start → turn/end 之间）
-                  if (state.isBusy(s.id)) ...[
-                    const SizedBox(width: 6),
-                    const _RunningBadge(),
+                title: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        s.displayTitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    // 回合运行中徽标（turn/start → turn/end 之间）
+                    if (state.isBusy(s.id)) ...[
+                      const SizedBox(width: 6),
+                      const _RunningBadge(),
+                    ],
                   ],
-                ]),
+                ),
                 subtitle: Text(
                   [
                     isFromApp ? AppL10n.i.fromPhone : AppL10n.i.fromPc,
-                    if (s.model != null && s.model!.isNotEmpty) AppL10n.i.modelOf(s.model!),
-                    if (s.updatedAt != null && s.updatedAt!.isNotEmpty) s.updatedAt!,
+                    if (s.model != null && s.model!.isNotEmpty)
+                      AppL10n.i.modelOf(s.model!),
+                    if (s.updatedAt != null && s.updatedAt!.isNotEmpty)
+                      s.updatedAt!,
                   ].join(' · '),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -499,24 +708,53 @@ class _SnapshotView extends StatelessWidget {
                     if (v == 'delete') onDelete(s);
                   },
                   itemBuilder: (_) => [
-                    PopupMenuItem(value: 'rename', child: Row(children: [
-                      const Icon(Icons.edit_outlined, size: 18),
-                      const SizedBox(width: 8),
-                      Text(AppL10n.i.rename),
-                    ])),
+                    PopupMenuItem(
+                      value: 'rename',
+                      child: Row(
+                        children: [
+                          const Icon(Icons.edit_outlined, size: 18),
+                          const SizedBox(width: 8),
+                          Text(AppL10n.i.rename),
+                        ],
+                      ),
+                    ),
                     const PopupMenuDivider(),
                     if (s.deletable)
-                      PopupMenuItem<String>(value: 'delete', child: Row(children: [
-                        const Icon(Icons.delete_outline, size: 18, color: Colors.red),
-                        const SizedBox(width: 6),
-                        Text(AppL10n.i.delete, style: const TextStyle(color: Colors.red)),
-                      ]))
+                      PopupMenuItem<String>(
+                        value: 'delete',
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.delete_outline,
+                              size: 18,
+                              color: Colors.red,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              AppL10n.i.delete,
+                              style: const TextStyle(color: Colors.red),
+                            ),
+                          ],
+                        ),
+                      )
                     else
-                      PopupMenuItem<String>(enabled: false, child: Row(children: [
-                        const Icon(Icons.delete_forever_outlined, size: 18, color: Colors.grey),
-                        const SizedBox(width: 6),
-                        Text(AppL10n.i.pcSessionNoDelete, style: const TextStyle(color: Colors.grey)),
-                      ])),
+                      PopupMenuItem<String>(
+                        enabled: false,
+                        child: Row(
+                          children: [
+                            const Icon(
+                              Icons.delete_forever_outlined,
+                              size: 18,
+                              color: Colors.grey,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              AppL10n.i.pcSessionNoDelete,
+                              style: const TextStyle(color: Colors.grey),
+                            ),
+                          ],
+                        ),
+                      ),
                   ],
                 ),
                 onTap: () => onOpen(s.id),
@@ -540,15 +778,24 @@ class _RunningBadge extends StatelessWidget {
         color: Colors.green.shade50,
         borderRadius: BorderRadius.circular(10),
       ),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        const SizedBox(
-          width: 10,
-          height: 10,
-          child: CircularProgressIndicator(strokeWidth: 1.5, color: Colors.green),
-        ),
-        const SizedBox(width: 4),
-        Text(AppL10n.i.running, style: const TextStyle(color: Colors.green, fontSize: 11)),
-      ]),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const SizedBox(
+            width: 10,
+            height: 10,
+            child: CircularProgressIndicator(
+              strokeWidth: 1.5,
+              color: Colors.green,
+            ),
+          ),
+          const SizedBox(width: 4),
+          Text(
+            AppL10n.i.running,
+            style: const TextStyle(color: Colors.green, fontSize: 11),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -564,11 +811,17 @@ class _SectionHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
-      child: Row(children: [
-        Icon(icon, size: 16, color: Theme.of(context).colorScheme.primary),
-        const SizedBox(width: 6),
-        Text(label, style: Theme.of(context).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.bold)),
-      ]),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: Theme.of(context).colorScheme.primary),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.titleSmall
+                ?.copyWith(fontWeight: FontWeight.bold),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -602,9 +855,12 @@ class _DirTile extends StatelessWidget {
       trailing: IconButton(
         icon: const Icon(Icons.open_in_new, size: 16),
         tooltip: AppL10n.i.browseDir,
-        onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(
-          builder: (_) => DirBrowserPage(state: state, path: node.path, title: node.name),
-        )),
+        onPressed: () => Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) =>
+                DirBrowserPage(state: state, path: node.path, title: node.name),
+          ),
+        ),
       ),
       children: node.children.isEmpty
           ? const []

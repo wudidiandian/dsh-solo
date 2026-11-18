@@ -69,6 +69,16 @@ class AppL10n {
       'Auth failed: $err (token may have been reset — re-scan the pairing QR)');
   String connectFailedDetail(Object err) =>
       _t('连接失败：$err（将自动重试）', 'Connection failed: $err (will retry automatically)');
+  // ---- 网关节点 ----
+  String get gatewayLabel => _t('网关节点', 'Gateway');
+  String get gatewayCN => _t('国内节点', 'China node');
+  String get gatewayINTL => _t('国际节点', 'Global node');
+  String get gatewayPair => _t('配对节点', 'Paired node');
+  String gatewaySwitchHint(String host) => _t('当前节点：$host',
+      'Current node: $host');
+  String get gatewaySwitched =>
+      _t('已切换节点，正在重连…（电脑端插件需连接同一网关）',
+          'Node switched, reconnecting… (the desktop plugin must use the same gateway)');
   String get pcDirectory => _t('电脑目录', 'PC directories');
   String get sessions => _t('会话', 'Sessions');
   String get noSessions => _t('暂无会话', 'No sessions yet');

@@ -37,7 +37,13 @@ export async function prepareRelease(env = process.env, cwd = root) {
   const required = ['DISTRIBUTION_CONFIG', 'ANDROID_KEYSTORE_BASE64', 'ANDROID_KEYSTORE_PASSWORD', 'ANDROID_KEY_ALIAS', 'ANDROID_KEY_PASSWORD']
   const missing = required.filter(key => !env[key])
   if (missing.length) throw new Error(`Missing release configuration: ${missing.join(', ')}`)
-  JSON.parse(env.DISTRIBUTION_CONFIG)
+  const distribution = JSON.parse(env.DISTRIBUTION_CONFIG)
+  for (const key of ['relayUrl', 'relayUrlIntl']) {
+    let endpoint
+    try { endpoint = new URL(distribution[key]) } catch { throw new Error(`Missing or invalid ${key} in release distribution configuration`) }
+    if (endpoint.protocol !== 'wss:' || endpoint.username || endpoint.password || endpoint.hash || endpoint.hostname.endsWith('.example.com')) throw new Error(`Invalid public ${key} in release distribution configuration`)
+  }
+  if (distribution.relayUrl === distribution.relayUrlIntl) throw new Error('Release gateway URLs must be different')
   const metadata = { ...version, repository, sourceRepository, sourceCommit: env.GITHUB_SHA }
   await mkdir(resolve(cwd, '.generated'), { recursive: true })
   await writeFile(resolve(cwd, '.generated/release-metadata.json'), JSON.stringify(metadata, null, 2) + '\n')

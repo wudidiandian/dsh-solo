@@ -33,7 +33,7 @@ services:
       - "--max-conn-per-ip"
       - "8"
       - "--max-upload"
-      - "10MB"
+      - "10485760"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8787/healthz || exit 1"]
       interval: 30s

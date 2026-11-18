@@ -2,6 +2,8 @@
 # 构建（仓库根目录）：docker build -f deploy/Dockerfile.relay -t dsh-solo/relay .
 FROM golang:1.22-alpine AS build
 WORKDIR /src
+# 国内网络环境拉取 Go 模块走 goproxy.cn（海外构建同样可用）
+ENV GOPROXY=https://goproxy.cn,direct
 COPY server/go.mod server/go.sum ./
 RUN go mod download
 COPY server/ ./

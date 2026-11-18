@@ -46,7 +46,7 @@ async function fixture(t) {
   await writeFile(resolve(cwd, 'app/pubspec.yaml'), `name: app\nversion: ${versions.appVersion}\n`)
   const env = {
     GITHUB_REPOSITORY: 'wudidiandian/dsh-solo', GITHUB_SHA: sha,
-    DISTRIBUTION_CONFIG: '{"relayUrl":"wss://private.invalid/ws"}',
+    DISTRIBUTION_CONFIG: '{"relayUrl":"wss://private.invalid/ws","relayUrlIntl":"wss://global.invalid/ws"}',
     ANDROID_KEYSTORE_BASE64: 'secret-key-data', ANDROID_KEYSTORE_PASSWORD: 'secret-store-password',
     ANDROID_KEY_ALIAS: 'secret-alias', ANDROID_KEY_PASSWORD: 'secret-key-password',
     GITHUB_OUTPUT: resolve(cwd, 'output'),
@@ -76,6 +76,16 @@ test('invalid source commits and malformed distribution JSON fail preflight', as
   const { cwd, env } = await fixture(t)
   await assert.rejects(prepareRelease({ ...env, GITHUB_SHA: 'main' }, cwd), /source commit/)
   await assert.rejects(prepareRelease({ ...env, DISTRIBUTION_CONFIG: 'invalid' }, cwd), SyntaxError)
+})
+
+test('release requires two distinct public secure gateway URLs', async t => {
+  const { cwd, env } = await fixture(t)
+  for (const config of [
+    { relayUrl: 'wss://private.invalid/ws' },
+    { relayUrl: 'wss://private.invalid/ws', relayUrlIntl: 'wss://relay-global.example.com/ws' },
+    { relayUrl: 'wss://private.invalid/ws', relayUrlIntl: 'wss://private.invalid/ws' },
+    { relayUrl: 'http://private.invalid/ws', relayUrlIntl: 'wss://global.invalid/ws' },
+  ]) await assert.rejects(prepareRelease({ ...env, DISTRIBUTION_CONFIG: JSON.stringify(config) }, cwd))
 })
 
 test('rejects a stale publication target outside the current repository', async t => {

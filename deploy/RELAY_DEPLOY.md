@@ -1,5 +1,14 @@
 # dsh-solo Relay VPS 部署手册（Ubuntu · 无域名 · 明文 WS）
 
+> **推荐：新部署请直接用 Docker 一键脚本**（WSS + 自动 TLS，一条命令完成）：
+>
+> ```bash
+> git clone https://github.com/wudidiandian/dsh-solo.git && cd dsh-solo
+> ./deploy/deploy.sh <你的域名>     # relay + Caddy 自动证书，脚本会自检健康
+> ```
+>
+> 详见 [SELF_HOST.md](SELF_HOST.md)。下文为旧的手工二进制 + systemd 方案，供无 Docker 环境参考。
+
 > 架构：手机 App 和电脑上的 dsh+agent 都是 WebSocket **客户端**，主动出站连接 VPS 上的 relay。
 > 电脑无需开放任何入站端口；手机在任何网络（4G/Wi-Fi）都能连。
 >

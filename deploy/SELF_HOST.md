@@ -23,11 +23,22 @@ relay 的连接模型：`App ↔ relay ↔ agent 插件`，两端用相同 devic
 - 一台 VPS（1C1G 起步即可），已装 Docker（`curl -fsSL https://get.docker.com | sh`）
 - 一个域名，A 记录指向 VPS IP
 
-### A2. 部署
+### A2. 部署（一键脚本，推荐）
 
 ```bash
 git clone https://github.com/wudidiandian/dsh-solo.git
 cd dsh-solo
+./deploy/deploy.sh <你的域名>      # 例如 ./deploy/deploy.sh relay.example.com
+# 脚本自动：生成 compose 环境变量 → 构建启动 relay+Caddy → 等待健康 → 验证 https 证书
+# 成功后网关地址即：wss://<你的域名>/ws
+```
+
+脚本幂等：换域名、更新代码后重新执行 `./deploy/deploy.sh <域名>` 即可。
+
+<details>
+<summary>手动分步执行（等价于脚本内做的事）</summary>
+
+```bash
 # 1. 复制统一配置，填入自己的 relayUrl 与 relayDomain
 cp config/distribution.example.json config/distribution.local.json
 # 编辑 config/distribution.local.json 后生成配置（需要 Node.js）
@@ -38,7 +49,11 @@ docker compose --env-file .generated/deploy.env -f deploy/docker-compose.yml up 
 curl https://<你的域名>/healthz     # → ok
 ```
 
+</details>
+
 Caddy 自动申请并续期 Let's Encrypt 证书（要求 80/443 公网可达，防火墙放行这两个端口；**8787 无需对公网开放**，compose 里已只映射到宿主回环）。
+
+> 多节点部署：在不同服务器上分别执行上述脚本、各自填自己的域名即可（例如国内备案域名一台、海外域名一台）。App 内置了网关选择，可在「连接设置」中切换国内/国际节点；电脑端插件的 `relayUrl` 需与所选节点一致。
 
 ### A.2 二进制直跑（不想用 Docker）
 

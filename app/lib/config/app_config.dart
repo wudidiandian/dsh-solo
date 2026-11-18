@@ -6,7 +6,12 @@ import 'config_store.dart';
 import 'defaults.dart';
 
 class AppConfig {
-  AppConfig({required this.relayUrl, required this.deviceToken, this.modelId, this.encryptionKey});
+  AppConfig({
+    required this.relayUrl,
+    required this.deviceToken,
+    this.modelId,
+    this.encryptionKey,
+  });
 
   String relayUrl;
   String deviceToken;
@@ -22,7 +27,14 @@ class AppConfig {
       final url = j['relayUrl']?.toString();
       if (url == null || url.isEmpty) return null;
       // 旧官方地址自动迁移：升级新包后无需重新扫码配对
-      final migrated = legacyRelayUrl.isNotEmpty && url == legacyRelayUrl ? defaultRelayUrl : url;
+      // An address used as an available international node is ambiguous: it may
+      // be an intentional selection from an older version, so preserve it.
+      final migrated =
+          legacyRelayUrl.isNotEmpty &&
+              legacyRelayUrl != intlRelayUrl &&
+              url == legacyRelayUrl
+          ? defaultRelayUrl
+          : url;
       return AppConfig(
         relayUrl: migrated,
         deviceToken: (j['deviceToken']?.toString().isNotEmpty ?? false)
@@ -37,9 +49,9 @@ class AppConfig {
   }
 
   Future<void> save() => saveConfigJson({
-        'relayUrl': relayUrl,
-        'deviceToken': deviceToken,
-        if (encryptionKey != null) 'encryptionKey': encryptionKey,
-        if (modelId != null) 'modelId': modelId,
-      });
+    'relayUrl': relayUrl,
+    'deviceToken': deviceToken,
+    if (encryptionKey != null) 'encryptionKey': encryptionKey,
+    if (modelId != null) 'modelId': modelId,
+  });
 }

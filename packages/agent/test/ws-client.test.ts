@@ -157,17 +157,19 @@ describe('SoloRelayClient', () => {
     })
     const disconnected = vi.fn()
     client.on('disconnected', disconnected)
-    client.start()
+    try {
+      client.start()
 
-    await waitFor(() => relay.serverConns.length >= 1)
-    relay.closeConn(0) // 服务端踢掉第一条连接
+      await waitFor(() => relay.serverConns.length >= 1)
+      relay.closeConn(0) // 服务端踢掉第一条连接
 
-    await waitFor(() => relay.serverConns.length >= 2, 5000)
-    expect(disconnected).toHaveBeenCalled()
-    // 重连后应重新握手
-    expect(relay.received.filter((e) => e.type === 'hello.agent').length).toBeGreaterThanOrEqual(2)
-    client.stop()
-  })
+      // 等第二次握手报文到达（而非仅连接建立），避免慢机器上的竞态
+      await waitFor(() => relay.received.filter((e) => e.type === 'hello.agent').length >= 2, 8000)
+      expect(disconnected).toHaveBeenCalled()
+    } finally {
+      client.stop()
+    }
+  }, 15000)
 
   it('收到 cmd.dispatch 时发出 command 事件', async () => {
     const relay = startMockRelay()

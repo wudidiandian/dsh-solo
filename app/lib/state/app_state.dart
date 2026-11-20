@@ -14,6 +14,7 @@ import '../l10n/app_l10n.dart';
 import '../protocol/envelope.dart';
 import '../relay/relay_client.dart';
 import 'change_entry.dart';
+import 'notification_service.dart';
 import 'session_cache.dart';
 
 /// 快照里的会话条目（防御性解析，字段缺失不崩溃）
@@ -163,6 +164,31 @@ class AppState extends ChangeNotifier {
     return _desktopCheck ??= _probeDesktop(c, _connectionEpoch);
   }
 
+  /// 握手成功后向插件注册设备身份，领取设备专属密钥（幂等；旧插件返回
+  /// unknown action 时静默跳过，下次握手重试）。
+  Future<void> _registerDevice(RelayClient c) async {
+    final id = deviceId;
+    if (id == null || id.isEmpty || deviceRegistered) return;
+    try {
+      final resp = await c.rpc(CmdAction.deviceRegister, {
+        'deviceId': id,
+        'name': '',
+      });
+      if (!identical(client, c)) return;
+      final p = resp.payloadMap;
+      final result = p['result'];
+      final key = p['ok'] == true && result is Map
+          ? result['deviceKey']?.toString()
+          : null;
+      if (key != null && key.isNotEmpty) {
+        deviceRegistered = true;
+        onDeviceKeyReceived?.call(key);
+      }
+    } catch (_) {
+      /* 注册失败不影响主链路；下次握手重试 */
+    }
+  }
+
   Future<void> _probeDesktop(RelayClient c, int epoch) async {
     checkingDesktop = true;
     notifyListeners();
@@ -210,6 +236,46 @@ class AppState extends ChangeNotifier {
   List<Map<String, dynamic>> models = [];
   List<SessionEntry> sessions = [];
   List<DirNode> dirTree = [];
+
+  /// 宿主版本与能力表（agent.snapshot 携带；旧版插件无此字段时保持空）
+  String? hostVersion;
+  Map<String, dynamic> hostCapabilities = {};
+
+  /// 能力是否被宿主明确关闭（仅显式 false 才降级；缺省/未知键保持原有行为，
+  /// 保证对旧版插件向后兼容）
+  bool capabilityOff(String key) => hostCapabilities[key] == false;
+
+  /// 本手机在当前工作站上的设备身份（连接前由 UI 注入；null = 不做设备注册）
+  String? deviceId;
+
+  /// 是否已领取设备专属密钥（true 时当前 encryptionKey 即设备密钥）
+  bool deviceRegistered = false;
+
+  /// 领取到设备专属密钥后的持久化回调（UI 层注入，state 保持无 IO 依赖）
+  void Function(String deviceKey)? onDeviceKeyReceived;
+
+  /// App 是否退到后台（UI 层生命周期监听注入；后台时才弹系统通知）
+  bool appInBackground = false;
+
+  /// 后台系统通知：仅新鲜事件（30s 内，避免重连补发旧事件刷屏）且插件标记了推送级别
+  void _maybeNotify(Envelope env) {
+    if (!appInBackground) return;
+    final level = env.pushLevel;
+    if (level == null || level == 'none') return;
+    final ts = env.ts;
+    if (ts == null ||
+        DateTime.now().millisecondsSinceEpoch - ts > 30000) {
+      return;
+    }
+    final summary = env.pushSummary;
+    if (summary == null || summary.isEmpty) return;
+    NotificationService.instance.show(
+      title: AppL10n.i.appTitle,
+      body: summary,
+      sessionId: env.sessionId,
+      high: level == 'high',
+    );
+  }
 
   /// 手机端选中的模型 id（session.prompt 的 modelId；null = 用宿主默认模型）
   String? selectedModelId;
@@ -414,6 +480,10 @@ class AppState extends ChangeNotifier {
         break;
       case MsgType.agentSnapshot:
         final p = env.payloadMap;
+        hostVersion = p['hostVersion']?.toString();
+        hostCapabilities = p['capabilities'] is Map
+            ? Map<String, dynamic>.from(p['capabilities'] as Map)
+            : {};
         interactions.clear();
         if (p['pendingInteractions'] is List) {
           for (final raw in p['pendingInteractions'] as List) {
@@ -461,6 +531,7 @@ class AppState extends ChangeNotifier {
 
       case MsgType.sessionEvent:
         _applySessionEvent(env);
+        _maybeNotify(env);
         break;
 
       case MsgType.sessionStream:
@@ -618,6 +689,7 @@ class AppState extends ChangeNotifier {
     newClient.onHandshakeOk = () {
       if (!identical(client, newClient)) return;
       unawaited(_checkDesktop(newClient));
+      unawaited(_registerDevice(newClient));
       _desktopTimer?.cancel();
       _desktopTimer = Timer.periodic(const Duration(seconds: 10), (_) {
         unawaited(_checkDesktop(newClient));
@@ -866,6 +938,14 @@ class AppState extends ChangeNotifier {
       notifyListeners();
     }
     return resp;
+  }
+
+  /// 中断会话当前回合（宿主 agent.cancel；运行标记由后续 turn/end 事件清除）
+  Future<Envelope> interruptSession(String sessionId) async {
+    final c = client;
+    if (c == null) throw StateError('relay not connected');
+    await _ensureDesktop(c);
+    return c.rpc(CmdAction.sessionInterrupt, {'sessionId': sessionId});
   }
 
   /// 清空某会话的事件缺口标记

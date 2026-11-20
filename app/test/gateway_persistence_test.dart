@@ -19,6 +19,17 @@ class FakeState extends AppState {
   }
 }
 
+/// 工作站保存链含多次安全存储往返：交替 pump/runAsync 直至全部落盘
+Future<void> flushStorage(WidgetTester tester) async {
+  for (var i = 0; i < 8; i++) {
+    await tester.pump(const Duration(milliseconds: 20));
+    await tester.runAsync(
+      () => Future<void>.delayed(const Duration(milliseconds: 20)),
+    );
+  }
+  await tester.pump();
+}
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   late Directory directory;
@@ -108,10 +119,7 @@ void main() {
     await tester.pump();
     await tester.tap(find.text('国际节点'));
     await tester.pumpAndSettle();
-    await tester.runAsync(
-      () => Future<void>.delayed(const Duration(milliseconds: 100)),
-    );
-    await tester.pump();
+    await flushStorage(tester);
     final saved = await tester.runAsync(() => AppConfig.load());
     expect(saved?.relayUrl, intlRelayUrl);
     expect(saved?.deviceToken, 'token');

@@ -5,6 +5,8 @@ import {
   type AgentSnapshotPayload,
   type ApprovalRespondData,
   type CmdDispatchPayload,
+  type DeviceRegisterData,
+  type DeviceRevokeData,
   type Envelope,
   type FileTransferChunkData,
   type FileTransferOfferData,
@@ -13,11 +15,13 @@ import {
   type SessionDeleteData,
   type SessionEvent,
   type SessionHistoryData,
+  type SessionInterruptData,
   type SessionPromptData,
   type SessionRenameData,
   makeEnvelope,
 } from '@dsh-solo/protocol'
 import type { InteractionBroker } from './interactions.js'
+import type { DeviceRegistry } from './devices.js'
 import { inferPushPriority, summarizeEvent } from './push-level.js'
 import { generateToken, writeTokenFile } from './token.js'
 
@@ -51,6 +55,8 @@ export interface HarnessServices {
   renameSession(id: string, title: string): Promise<void>
   /** 删除会话（dispose 持有的 agent；仅支持本插件创建的会话） */
   deleteSession(id: string): Promise<void>
+  /** 中断会话当前回合（宿主 agent.cancel；宿主不支持时缺省） */
+  interruptSession?(id: string): Promise<void>
   /** 订阅会话事件流，返回取消订阅函数 */
   onSessionEvent(cb: (sessionId: string, event: SessionEvent) => void): () => void
   /** 注册高危工具审批拦截器：resolve(true)=允许执行 */
@@ -76,6 +82,10 @@ export interface AgentCoreOptions {
   workspaceRoots?: string[]
   /** Called after a token reset so the relay client reconnects with the new token */
   rotateDeviceToken?: (newToken: string) => void | Promise<void>
+  /** 已配对设备注册表（device.register / list / revoke） */
+  devices?: DeviceRegistry
+  /** 新设备注册后轮换主配对密钥；返回新密钥（index.ts 同步更新配对页与客户端） */
+  rotatePairingKey?: () => Promise<string>
 }
 
 /** Memory-only hot window; persisted/host history remains available through paging. */
@@ -115,6 +125,10 @@ export interface RelayLike {
   off?(event: 'connected' | 'command', cb: (...args: any[]) => void): unknown
   /** 连接就绪探测（可选）：周期快照重报在未连接时跳过，避免灌离线队列 */
   isConnected?(): boolean
+  /** 对端关联的设备 id（设备注册表在线追踪用） */
+  deviceIdOf?(peerId: string | undefined): string | null
+  /** 撤销设备时立即断开其加密会话 */
+  closeDevice?(deviceId: string): void
 }
 
 /**
@@ -289,6 +303,14 @@ export class AgentCore {
     return token
   }
 
+  /** 撤销单台设备：删除设备密钥并立即断开其加密会话（配对页 / device.revoke 共用） */
+  async revokeDevice(deviceId: string): Promise<boolean> {
+    if (!this.opts.devices) return false
+    const revoked = await this.opts.devices.revoke(deviceId)
+    if (revoked) this.client.closeDevice?.(deviceId)
+    return revoked
+  }
+
   // -------------------------------------------------------------------------
 
   /**
@@ -356,7 +378,7 @@ export class AgentCore {
     const seqId = canonical ? HOST_HISTORY_OFFSET + Number(hostSeq) + 1 : this.nextSequence()
     if (canonical) event = { ...event, seqId, historyEpoch: 'host-v1' }
     this.recordHistory(sessionId, event, seqId)
-    const pushLevel = inferPushPriority(event.kind)
+    const pushLevel = inferPushPriority(event)
     this.client.send(
       makeEnvelope('session.event', event, {
         sessionId,
@@ -494,6 +516,9 @@ export class AgentCore {
     const isActive = () => !this.stopped && generation === this.generation
     const payload = env.payload as CmdDispatchPayload | undefined
     if (!payload || typeof payload.action !== 'string') return
+    // 已注册设备的在线追踪（节流落盘在注册表内）
+    const deviceId = this.client.deviceIdOf?.(env.peerId)
+    if (deviceId && this.opts.devices) void this.opts.devices.touch(deviceId)
     const respond = (ok: boolean, result?: unknown, error?: string) => {
       if (env.reqId && isActive()) {
         this.client.send(makeEnvelope('rpc.response', { ok, result, error }, { reqId: env.reqId, peerId: env.peerId }))
@@ -575,6 +600,13 @@ export class AgentCore {
           respond(true, { sessionId: data.sessionId })
           break
         }
+        case 'session.interrupt': {
+          if (!this.opts.services.interruptSession) throw new Error('Interrupt requires a newer desktop plugin')
+          const data = payload.data as SessionInterruptData
+          await this.opts.services.interruptSession(data.sessionId)
+          respond(true, { sessionId: data.sessionId })
+          break
+        }
         case 'session.history': {
           const data = payload.data as SessionHistoryData
           const events = await this.loadHistory(data.sessionId, data.sinceSeqId)
@@ -604,6 +636,26 @@ export class AgentCore {
         case 'device.token.reset': {
           const token = await this.resetDeviceToken()
           respond(true, { token })
+          break
+        }
+        case 'device.register': {
+          if (!this.opts.devices || !this.opts.rotatePairingKey) throw new Error('Device management requires a newer desktop plugin')
+          const data = payload.data as DeviceRegisterData
+          const { deviceKey, created } = await this.opts.devices.register(
+            String(data?.deviceId ?? ''),
+            typeof data?.name === 'string' ? data.name : '',
+          )
+          // 新设备领取专属密钥后轮换主密钥：被撤销设备无法凭旧 QR 重新注册
+          if (created) await this.opts.rotatePairingKey()
+          respond(true, { deviceId: data.deviceId, deviceKey })
+          break
+        }
+        case 'device.list':
+          respond(true, { devices: this.opts.devices?.list() ?? [] })
+          break
+        case 'device.revoke': {
+          const data = payload.data as DeviceRevokeData
+          respond(true, { revoked: await this.revokeDevice(String(data?.deviceId ?? '')) })
           break
         }
         default:

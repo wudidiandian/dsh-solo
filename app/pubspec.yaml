@@ -1,7 +1,7 @@
 name: dsh_solo
 description: "DSH-SOLO 移动端遥控器：随时随地掌控电脑上的 AI 任务"
 publish_to: 'none'
-version: 0.1.6+17
+version: 0.1.7+18
 
 environment:
   sdk: ^3.13.5
@@ -27,11 +27,17 @@ dependencies:
   url_launcher: ^6.3.3
   cryptography: 2.9.0
   flutter_secure_storage: 11.2.0
+  # 本地系统通知（后台任务完成/审批提醒；进程存活期间有效）
+  flutter_local_notifications: ^19.0.0
+  # 通知被系统永久拒绝后跳转系统设置页
+  app_settings: ^9.0.1
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
   flutter_lints: ^6.0.0
+  # 测试中注入 Android 通知平台实现（主依赖的传递包，显式声明供测试引用）
+  flutter_local_notifications_platform_interface: ^9.1.0
 
 flutter:
   uses-material-design: true

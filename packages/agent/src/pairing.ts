@@ -4,6 +4,7 @@ import { decodeKey } from './e2ee.js'
 // reset button. Loopback-only; the relay itself stays stateless.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import QRCode from 'qrcode'
+import type { PublicDevice } from './devices.js'
 
 export interface PairingServerOptions {
   /** Current device token provider */
@@ -13,6 +14,10 @@ export interface PairingServerOptions {
   getRelayUrl: () => string
   /** Reset handler: generate + persist + reconnect; resolves with the new token */
   resetToken: () => Promise<string>
+  /** 设备管理（可选；缺省时页面不显示设备区） */
+  getDevices?: () => PublicDevice[]
+  revokeDevice?: (deviceId: string) => Promise<boolean>
+  renameDevice?: (deviceId: string, name: string) => Promise<boolean>
   /** First port to try (default 8790; increments up to maxPort on EADDRINUSE) */
   basePort?: number
   maxPort?: number
@@ -73,6 +78,12 @@ function renderPage(relayUrl: string, masked: string, qrSvg: string): string {
   button.danger { color: #c0392b; }
   .tips { font-size: 12px; color: #888; line-height: 1.7; margin-top: 16px;
           border-top: 1px solid #eee; padding-top: 12px; }
+  .dev { display: flex; align-items: center; gap: 8px; padding: 8px 10px;
+         background: #f0f1f5; border-radius: 8px; margin-bottom: 6px; font-size: 13px; }
+  .dev .name { flex: 1; word-break: break-all; }
+  .dev .seen { font-size: 11px; color: #888; }
+  .dev button { flex: 0 0 auto; padding: 4px 10px; font-size: 12px; }
+  .dev-empty { font-size: 12px; color: #999; padding: 6px 2px; }
 </style>
 </head>
 <body>
@@ -89,7 +100,11 @@ function renderPage(relayUrl: string, masked: string, qrSvg: string): string {
       <button class="danger" id="resetBtn" data-i18n="reset">重置令牌</button>
     </div>
   </div>
-  <div class="qr">${qrSvg}</div>
+  <div class="qr" id="qrBox">${qrSvg}</div>
+  <div class="row">
+    <div class="label" id="t-devicesLabel">已配对设备</div>
+    <div id="deviceList"></div>
+  </div>
   <div class="tips" id="t-tips">
     手机 App → 设置 → 「扫码配对」扫描上方二维码即可自动填入地址与令牌。<br>
     重置令牌后旧令牌立即失效，手机需重新扫码配对。
@@ -103,7 +118,10 @@ function renderPage(relayUrl: string, masked: string, qrSvg: string): string {
       reset: '重置令牌', resetConfirm: '重置后手机端需重新扫码配对，确定重置？',
       resetDone: '已重置，页面将刷新', resetFailed: '重置失败',
       tokenFetchFailed: '获取令牌失败',
-      tips: '手机 App → 设置 → 「扫码配对」扫描上方二维码即可自动填入地址与令牌。<br>重置令牌后旧令牌立即失效，手机需重新扫码配对。',
+      tips: '手机 App → 设置 → 「扫码配对」扫描上方二维码即可自动填入地址与令牌。<br>重置令牌后旧令牌立即失效，手机需重新扫码配对。<br>二维码随密钥轮换自动更新，请始终扫描本页当前显示的二维码。',
+      devicesLabel: '已配对设备', noDevices: '暂无已注册设备（新版 App 连接后自动注册；旧版 App 不显示在此列表）',
+      revoke: '撤销', revokeConfirm: '撤销后该设备立即断开且无法重连，需重新扫码配对。确定撤销？',
+      revokeFailed: '撤销失败', lastSeen: '最近在线',
       langBtn: 'EN', htmlLang: 'zh-CN',
     },
     en: {
@@ -111,7 +129,10 @@ function renderPage(relayUrl: string, masked: string, qrSvg: string): string {
       reset: 'Reset token', resetConfirm: 'The phone must re-scan after reset. Continue?',
       resetDone: 'Reset done — reloading', resetFailed: 'Reset failed',
       tokenFetchFailed: 'Failed to fetch token',
-      tips: 'Phone app → Settings → "Scan pairing QR" to auto-fill the address and token.<br>Resetting invalidates the old token immediately; re-pair your phone afterwards.',
+      tips: 'Phone app → Settings → "Scan pairing QR" to auto-fill the address and token.<br>Resetting invalidates the old token immediately; re-pair your phone afterwards.<br>The QR refreshes automatically when keys rotate; always scan the one currently shown here.',
+      devicesLabel: 'Paired devices', noDevices: 'No registered devices yet (new app versions register automatically; legacy apps are not listed)',
+      revoke: 'Revoke', revokeConfirm: 'The device is disconnected immediately and must re-scan the QR to pair again. Continue?',
+      revokeFailed: 'Revoke failed', lastSeen: 'Last seen',
       langBtn: '中文', htmlLang: 'en',
     },
   };
@@ -127,6 +148,7 @@ function renderPage(relayUrl: string, masked: string, qrSvg: string): string {
     document.getElementById('t-tokenLabel').textContent = t.tokenLabel;
     document.getElementById('resetBtn').textContent = t.reset;
     document.getElementById('t-tips').innerHTML = t.tips;
+    document.getElementById('t-devicesLabel').textContent = t.devicesLabel;
     document.getElementById('langBtn').textContent = t.langBtn;
     if (full === null) toggleBtn.textContent = t.show;
     document.documentElement.lang = t.htmlLang;
@@ -155,9 +177,64 @@ function renderPage(relayUrl: string, masked: string, qrSvg: string): string {
       location.reload();
     } catch (e) { alert(I18N[lang].resetFailed); }
   });
+  const deviceList = document.getElementById('deviceList');
+  function fmtTime(ts) { return ts ? new Date(ts).toLocaleString() : '-'; }
+  async function loadDevices() {
+    try {
+      const r = await fetch('/api/devices');
+      const j = await r.json();
+      const devices = j.devices || [];
+      deviceList.innerHTML = '';
+      if (!devices.length) {
+        const empty = document.createElement('div');
+        empty.className = 'dev-empty';
+        empty.textContent = I18N[lang].noDevices;
+        deviceList.appendChild(empty);
+        return;
+      }
+      for (const d of devices) {
+        const row = document.createElement('div');
+        row.className = 'dev';
+        const name = document.createElement('span');
+        name.className = 'name';
+        name.textContent = d.name || d.id.slice(0, 8);
+        const seen = document.createElement('span');
+        seen.className = 'seen';
+        seen.textContent = I18N[lang].lastSeen + ': ' + fmtTime(d.lastSeen);
+        const btn = document.createElement('button');
+        btn.className = 'danger';
+        btn.textContent = I18N[lang].revoke;
+        btn.addEventListener('click', async () => {
+          if (!confirm(I18N[lang].revokeConfirm)) return;
+          try {
+            await fetch('/api/devices/revoke', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ deviceId: d.id }),
+            });
+            loadDevices();
+          } catch (e) { alert(I18N[lang].revokeFailed); }
+        });
+        row.appendChild(name); row.appendChild(seen); row.appendChild(btn);
+        deviceList.appendChild(row);
+      }
+    } catch (e) { /* 设备区加载失败不影响配对主功能 */ }
+  }
+  loadDevices();
+  // 主密钥会在新设备注册/令牌重置时轮换：轮询换图，保证扫到的始终是当前有效码
+  async function refreshQr() {
+    try {
+      const q = await fetch('/api/qr');
+      const svg = await q.text();
+      const box = document.getElementById('qrBox');
+      if (box.innerHTML.trim() !== svg.trim()) box.innerHTML = svg;
+    } catch (e) { /* 轮询失败不影响页面 */ }
+  }
+  setInterval(refreshQr, 5000);
+  window.addEventListener('focus', refreshQr);
   langBtn.addEventListener('click', () => {
     lang = lang === 'zh' ? 'en' : 'zh';
     applyLang();
+    loadDevices();
   });
   applyLang();
 </script>
@@ -168,6 +245,18 @@ function renderPage(relayUrl: string, masked: string, qrSvg: string): string {
 function sendJson(res: ServerResponse, body: unknown, status = 200): void {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' })
   res.end(JSON.stringify(body))
+}
+
+function readJsonBody(req: IncomingMessage): Promise<any> {
+  return new Promise((resolve, reject) => {
+    let data = ''
+    req.on('data', (chunk) => {
+      data += chunk
+      if (data.length > 4096) { reject(new Error('body too large')); req.destroy() }
+    })
+    req.on('end', () => { try { resolve(data ? JSON.parse(data) : {}) } catch (err) { reject(err) } })
+    req.on('error', reject)
+  })
 }
 
 export class PairingServer {
@@ -246,9 +335,35 @@ export class PairingServer {
         sendJson(res, { token: this.opts.getToken(), relayUrl: this.opts.getRelayUrl(), ...(this.opts.getEncryptionKey ? { pairingCode: pairingCode(this.opts.getRelayUrl(), this.opts.getToken(), this.opts.getEncryptionKey()) } : {}) })
         return
       }
+      // 当前有效二维码（主密钥轮换后页面轮询换图，避免扫到失效旧码）
+      if (req.method === 'GET' && url === '/api/qr') {
+        const svg = await QRCode.toString(pairUri(this.opts.getRelayUrl(), this.opts.getToken(), this.opts.getEncryptionKey?.()), {
+          type: 'svg',
+          margin: 1,
+        })
+        res.writeHead(200, { 'Content-Type': 'image/svg+xml; charset=utf-8' })
+        res.end(svg)
+        return
+      }
       if (req.method === 'POST' && url === '/api/reset') {
         const token = await this.opts.resetToken()
         sendJson(res, { token, relayUrl: this.opts.getRelayUrl() })
+        return
+      }
+      if (req.method === 'GET' && url === '/api/devices') {
+        sendJson(res, { devices: this.opts.getDevices?.() ?? [] })
+        return
+      }
+      if (req.method === 'POST' && (url === '/api/devices/revoke' || url === '/api/devices/rename')) {
+        const body = await readJsonBody(req)
+        const id = typeof body?.deviceId === 'string' ? body.deviceId : ''
+        if (url === '/api/devices/revoke') {
+          if (!this.opts.revokeDevice) { sendJson(res, { error: 'unsupported' }, 400); return }
+          sendJson(res, { revoked: await this.opts.revokeDevice(id) })
+        } else {
+          if (!this.opts.renameDevice) { sendJson(res, { error: 'unsupported' }, 400); return }
+          sendJson(res, { renamed: await this.opts.renameDevice(id, typeof body?.name === 'string' ? body.name : '') })
+        }
         return
       }
       if (req.method === 'GET' && (url === '/' || url === '/index.html')) {

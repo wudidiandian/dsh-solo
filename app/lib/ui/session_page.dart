@@ -278,6 +278,22 @@ class _SessionPageState extends State<SessionPage> {
     }
   }
 
+  /// 中断当前回合（运行中发送按钮变为停止）
+  Future<void> _interrupt() async {
+    final sid = _activeSessionId;
+    if (sid == null) return;
+    try {
+      final resp = await widget.state.interruptSession(sid);
+      if (!mounted) return;
+      final p = resp.payloadMap;
+      if (p['ok'] != true) {
+        _toast(AppL10n.i.sendFailed(p['error'] ?? AppL10n.i.unknownError));
+      }
+    } catch (e) {
+      if (mounted) _toast(AppL10n.i.sendError(e));
+    }
+  }
+
   // -------------------------------------------------------------------------
   // 附件交互（2026-10-28）：+ 菜单 → 拍照 / 相册 / 选择项目 / 链接
   // -------------------------------------------------------------------------
@@ -911,7 +927,10 @@ class _SessionPageState extends State<SessionPage> {
                           icon: const Icon(Icons.folder_outlined, size: 18),
                           label: Text(_selectedProject!.title),
                         ),
-                      _ModelPicker(state: state),
+                      _ModelPicker(
+                        state: state,
+                        existingSession: _activeSessionId != null,
+                      ),
                       _AttachmentStrip(
                         state: state,
                         onRemoved: (_) => setState(() {}),
@@ -943,11 +962,27 @@ class _SessionPageState extends State<SessionPage> {
                             ),
                           ),
                           const SizedBox(width: 8),
-                          IconButton.filled(
-                            icon: const Icon(Icons.send),
-                            tooltip: AppL10n.i.send,
-                            onPressed: _send,
-                          ),
+                          // 运行中且宿主支持中断时，发送按钮变为停止
+                          if (_activeSessionId != null &&
+                              state.isBusy(_activeSessionId!) &&
+                              !state.capabilityOff('session.interrupt'))
+                            IconButton.filled(
+                              icon: const Icon(Icons.stop),
+                              tooltip: AppL10n.i.stopTask,
+                              style: IconButton.styleFrom(
+                                backgroundColor:
+                                    Theme.of(context).colorScheme.error,
+                                foregroundColor:
+                                    Theme.of(context).colorScheme.onError,
+                              ),
+                              onPressed: _interrupt,
+                            )
+                          else
+                            IconButton.filled(
+                              icon: const Icon(Icons.send),
+                              tooltip: AppL10n.i.send,
+                              onPressed: _send,
+                            ),
                         ],
                       ),
                     ],
@@ -1065,13 +1100,19 @@ class _SessionPageState extends State<SessionPage> {
           break;
         case 'turn/end':
           flush();
-          // 宿主真实结构: data = { turn, reason: { kind: completed|blocked|max-tokens|error, error? } }
+          // 宿主真实结构: data = { turn, reason: { kind: completed|aborted|blocked|max-tokens|error, reason?, error? } }
           final d = data is Map ? data : const {};
           final r = d['reason'] ?? d['kind'];
           final reason = r is Map
               ? (r['kind']?.toString() ?? '')
               : (r?.toString() ?? '');
-          final failed = reason.isNotEmpty && reason != 'completed';
+          // 用户主动停止（App 停止按钮 / 电脑端取消）：中性提示，不算失败
+          final cause = r is Map && r['reason'] is Map
+              ? (r['reason'] as Map)['kind']?.toString()
+              : null;
+          final stopped = reason == 'aborted' && cause == 'user';
+          final failed =
+              !stopped && reason.isNotEmpty && reason != 'completed';
           var errText = AppL10n.i.turnEnded(reason);
           if (failed && r is Map && r['error'] != null) {
             final e = r['error'];
@@ -1080,7 +1121,9 @@ class _SessionPageState extends State<SessionPage> {
                 : e.toString();
             if (msg.isNotEmpty) errText = AppL10n.i.turnEndWith(reason, msg);
           }
-          widgets.add(_TurnLine(ok: !failed, error: failed ? errText : null));
+          widgets.add(
+            _TurnLine(ok: !failed, stopped: stopped, error: failed ? errText : null),
+          );
           break;
         case 'turn/start':
           // 回合开始：运行态由 AppState._busySessions 维护（isBusy），
@@ -1452,30 +1495,37 @@ class _ToolLine extends StatelessWidget {
 
 /// 回合结束行
 class _TurnLine extends StatelessWidget {
-  const _TurnLine({required this.ok, this.error});
+  const _TurnLine({required this.ok, this.stopped = false, this.error});
 
   final bool ok;
+
+  /// 用户主动停止：中性灰色提示，区别于成功与失败
+  final bool stopped;
   final String? error;
 
   @override
   Widget build(BuildContext context) {
+    final color = stopped
+        ? Colors.grey
+        : (ok ? Colors.green : Colors.red);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
           Icon(
-            ok ? Icons.check_circle : Icons.cancel,
+            stopped
+                ? Icons.stop_circle_outlined
+                : (ok ? Icons.check_circle : Icons.cancel),
             size: 16,
-            color: ok ? Colors.green : Colors.red,
+            color: color,
           ),
           const SizedBox(width: 6),
           Expanded(
             child: Text(
-              ok ? AppL10n.i.taskDone : AppL10n.i.taskFailed(error),
-              style: TextStyle(
-                fontSize: 13,
-                color: ok ? Colors.green : Colors.red,
-              ),
+              stopped
+                  ? AppL10n.i.taskStopped
+                  : (ok ? AppL10n.i.taskDone : AppL10n.i.taskFailed(error)),
+              style: TextStyle(fontSize: 13, color: color),
             ),
           ),
         ],
@@ -1549,9 +1599,12 @@ class _StreamingBubble extends StatelessWidget {
 ///   per-session 切换 API 时保持原模型，不阻塞发送）。
 /// - 未选择（null）= 跟随宿主默认模型（电脑端 dsh 的“默认模型”设置）。
 class _ModelPicker extends StatelessWidget {
-  const _ModelPicker({required this.state});
+  const _ModelPicker({required this.state, this.existingSession = false});
 
   final AppState state;
+
+  /// 已有会话：宿主明确不支持 per-session 模型切换时提示"仅对新会话生效"
+  final bool existingSession;
 
   Future<void> _pick(BuildContext context) async {
     final models = state.models;
@@ -1569,6 +1622,14 @@ class _ModelPicker extends StatelessWidget {
                     ?.copyWith(fontWeight: FontWeight.bold),
               ),
             ),
+            if (existingSession && state.capabilityOff('session.setModel'))
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+                child: Text(
+                  AppL10n.i.modelNewSessionOnly,
+                  style: const TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+              ),
             // 「跟随默认」：清空 App 侧选择，回落宿主默认模型
             ListTile(
               dense: true,

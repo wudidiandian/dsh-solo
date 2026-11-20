@@ -390,6 +390,12 @@ class RelayClient {
         );
         return;
       }
+      if (env.payloadMap['reason'] == 'device-revoked') {
+        _encryptionFailure(
+          '此设备已被电脑端撤销，请重新扫码配对 / This device was revoked; scan the QR to pair again',
+        );
+        return;
+      }
       try {
         _channel?.sink.close();
       } catch (_) {}

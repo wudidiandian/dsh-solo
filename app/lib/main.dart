@@ -8,7 +8,11 @@ import 'package:flutter/services.dart' show rootBundle;
 import 'config/app_config.dart';
 import 'l10n/app_l10n.dart';
 import 'state/app_state.dart';
+import 'state/notification_service.dart';
 import 'ui/home_page.dart';
+import 'ui/session_page.dart';
+
+final GlobalKey<NavigatorState> navigatorKey = GlobalKey<NavigatorState>();
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -17,19 +21,51 @@ Future<void> main() async {
     yield LicenseEntryWithLineBreaks(['dsh_solo'], await rootBundle.loadString('assets/LICENSE'));
   });
   final cfg = await AppConfig.load();
-  runApp(DshSoloApp(state: AppState(), initialConfig: cfg));
+  final state = AppState();
+  await NotificationService.instance.init();
+  NotificationService.instance.onOpenSession = (sessionId) {
+    navigatorKey.currentState?.push(
+      MaterialPageRoute<void>(
+        builder: (_) => SessionPage(state: state, sessionId: sessionId),
+      ),
+    );
+  };
+  runApp(DshSoloApp(state: state, initialConfig: cfg));
 }
 
-class DshSoloApp extends StatelessWidget {
+class DshSoloApp extends StatefulWidget {
   const DshSoloApp({super.key, required this.state, this.initialConfig});
 
   final AppState state;
   final AppConfig? initialConfig;
 
   @override
+  State<DshSoloApp> createState() => _DshSoloAppState();
+}
+
+class _DshSoloAppState extends State<DshSoloApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    widget.state.appInBackground = state != AppLifecycleState.resumed;
+  }
+
+  @override
   Widget build(BuildContext context) {
     const seed = Color(0xFF4D6BFE);
     return MaterialApp(
+      navigatorKey: navigatorKey,
       debugShowCheckedModeBanner: false,
       title: AppL10n.i.appTitle,
       theme: ThemeData(colorScheme: ColorScheme.fromSeed(seedColor: seed), useMaterial3: true),
@@ -38,7 +74,7 @@ class DshSoloApp extends StatelessWidget {
         useMaterial3: true,
       ),
       themeMode: ThemeMode.system,
-      home: HomePage(state: state, initialConfig: initialConfig),
+      home: HomePage(state: widget.state, initialConfig: widget.initialConfig),
     );
   }
 }

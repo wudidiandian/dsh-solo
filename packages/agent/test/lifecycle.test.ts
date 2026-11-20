@@ -10,7 +10,17 @@ const mocks = vi.hoisted(() => ({
 }))
 vi.mock('../src/e2ee.js', () => ({ resolvePairingKey: async () => 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' }))
 vi.mock('../src/token.js', () => ({ resolveDeviceToken: mocks.token }))
-vi.mock('node:fs/promises', () => ({ mkdir: vi.fn(async () => {}) }))
+vi.mock('node:fs/promises', () => ({
+  mkdir: vi.fn(async () => {}),
+  readFile: vi.fn(async () => {
+    const err: NodeJS.ErrnoException = new Error('ENOENT')
+    err.code = 'ENOENT'
+    throw err
+  }),
+  writeFile: vi.fn(async () => {}),
+  rename: vi.fn(async () => {}),
+  chmod: vi.fn(async () => {}),
+}))
 vi.mock('../src/core.js', () => ({ AgentCore: class {
   constructor(_client: unknown, opts: unknown) { mocks.options = opts }
   publishSnapshot = vi.fn(async () => {})

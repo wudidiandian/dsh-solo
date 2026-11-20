@@ -91,7 +91,31 @@ export interface AgentSnapshotPayload {
   sessions?: unknown[]
   dirTree?: DirTreeNode[]
   pendingInteractions?: unknown[]
+  /** 宿主（DSH）版本，探测不到时缺省 */
+  hostVersion?: string
+  /** 宿主能力表：App 据此动态启用/降级 UI；旧插件缺省此字段时 App 保持原有行为 */
+  capabilities?: HostCapabilities
   timestamp: number
+}
+
+/**
+ * 能力键约定（可扩展，App 对未知键忽略）：
+ * - session.create / session.rename / session.history / interactions / models / projects / fileUpload：boolean
+ * - session.setModel / session.interrupt：boolean（随活 agent 探测动态更新）
+ * - session.delete：'own-only'（仅插件创建的会话）| 'all' | false
+ */
+export interface HostCapabilities {
+  'session.create'?: boolean
+  'session.setModel'?: boolean
+  'session.interrupt'?: boolean
+  'session.delete'?: 'own-only' | 'all' | false
+  'session.rename'?: boolean
+  'session.history'?: boolean
+  interactions?: boolean
+  models?: boolean
+  projects?: boolean
+  fileUpload?: boolean
+  [key: string]: boolean | string | undefined
 }
 
 /** 浅目录树节点（默认展开 2 层） */
@@ -134,8 +158,12 @@ export type CommandAction =
   | 'session.rename'
   | 'session.delete'
   | 'session.history'
+  | 'session.interrupt'
   | 'device.token.get'
   | 'device.token.reset'
+  | 'device.register'
+  | 'device.list'
+  | 'device.revoke'
   // 文件传输（2026-10-28）：手机 → 电脑上传。relay 仅做字节限流与大小校验，
   // 不落盘不缓存；agent 内存组装后写入 uploads 目录。
   | 'file.offer'
@@ -195,6 +223,17 @@ export interface ApprovalRespondData {
   approved: boolean
 }
 
+/** device.register：手机领取设备专属密钥（deviceId 由 App 生成并持久化，32 位 hex） */
+export interface DeviceRegisterData {
+  deviceId: string
+  name?: string
+}
+
+/** device.revoke：撤销单台设备（配对页或 App 管理入口） */
+export interface DeviceRevokeData {
+  deviceId: string
+}
+
 export interface ListDirData {
   path: string
 }
@@ -205,6 +244,11 @@ export interface SessionRenameData {
 }
 
 export interface SessionDeleteData {
+  sessionId: string
+}
+
+/** session.interrupt：中断会话当前回合（宿主 agent.cancel，清空排队输入） */
+export interface SessionInterruptData {
   sessionId: string
 }
 
@@ -229,15 +273,21 @@ export interface CmdDispatchPayload<A extends CommandAction = CommandAction> {
           ? SessionRenameData
           : A extends 'session.delete'
             ? SessionDeleteData
-            : A extends 'session.history'
-              ? SessionHistoryData
-              : A extends 'device.token.get' | 'device.token.reset'
-                ? Record<string, never>
-                : A extends 'file.offer'
-                  ? FileTransferOfferData
-                  : A extends 'file.chunk'
-                    ? FileTransferChunkData
-                    : unknown
+            : A extends 'session.interrupt'
+              ? SessionInterruptData
+              : A extends 'session.history'
+                ? SessionHistoryData
+                : A extends 'device.token.get' | 'device.token.reset' | 'device.list'
+                  ? Record<string, never>
+                  : A extends 'device.register'
+                    ? DeviceRegisterData
+                    : A extends 'device.revoke'
+                      ? DeviceRevokeData
+                      : A extends 'file.offer'
+                        ? FileTransferOfferData
+                        : A extends 'file.chunk'
+                          ? FileTransferChunkData
+                          : unknown
 }
 
 export interface RpcResponsePayload {

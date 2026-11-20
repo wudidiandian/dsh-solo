@@ -40,6 +40,10 @@ class CmdAction {
   static const sessionRename = 'session.rename';
   static const sessionDelete = 'session.delete';
   static const sessionHistory = 'session.history';
+  static const sessionInterrupt = 'session.interrupt';
+  static const deviceRegister = 'device.register';
+  static const deviceList = 'device.list';
+  static const deviceRevoke = 'device.revoke';
 
   /// 文件上传（2026-10-28）：手机 → 电脑，relay 字节限流、agent 内存组装落盘
   static const fileOffer = 'file.offer';

@@ -29,6 +29,17 @@ export async function resolvePairingKey(stateDir: string, token: string): Promis
   await rename(temporary, path)
   return key
 }
+/** 强制轮换主配对密钥（新设备注册后调用；已建立的设备会话不受影响） */
+export async function rotatePairingKey(stateDir: string, token: string): Promise<string> {
+  const path = join(stateDir, 'pairing-key.json')
+  const binding = createHash('sha256').update(token).digest('hex')
+  const key = randomBytes(32).toString('base64url')
+  await mkdir(stateDir, { recursive: true, mode: 0o700 })
+  const temporary = `${path}.${randomBytes(8).toString('hex')}.tmp`
+  await writeFile(temporary, JSON.stringify({ binding, key }), { mode: 0o600 })
+  await rename(temporary, path)
+  return key
+}
 export interface SecureHello { id: string; publicKey: string; proof: string }
 export interface SecureWelcome { id: string; publicKey: string; proof: string }
 export interface SecurePacket { counter: number; ciphertext: string }

@@ -1,12 +1,16 @@
 /// 主页：连接设置 + 电脑快照（模型列表 + 会话列表 + 目录树）。
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../config/app_config.dart';
 import '../config/defaults.dart';
+import '../config/workstation_store.dart';
 import '../l10n/app_l10n.dart';
 import '../relay/relay_client.dart';
 import '../state/app_state.dart';
+import '../state/notification_service.dart';
 import 'dir_browser_page.dart';
 import 'pair_scan_page.dart';
 import 'session_page.dart';
@@ -33,9 +37,17 @@ class _HomePageState extends State<HomePage> {
   String? _gateway;
   Future<void> _saveQueue = Future<void>.value();
 
+  /// 当前工作站配置（null = 尚未入库的新配对）与已保存工作站列表
+  AppConfig? _activeConfig;
+  List<WorkstationEntry> _stations = [];
+
+  /// 扫码/粘贴带来了新配对密钥：需要重新走设备注册
+  bool _freshPairing = false;
+
   @override
   void initState() {
     super.initState();
+    _activeConfig = widget.initialConfig;
     // 预填顺序：已保存配置 > 内置默认 relay 地址；令牌由扫码或手输填入
     _urlCtrl = TextEditingController(
       text: widget.initialConfig?.relayUrl ?? intlRelayUrl,
@@ -58,14 +70,85 @@ class _HomePageState extends State<HomePage> {
         /* best-effort */
       }
     };
+    // 设备身份注入 + 设备专属密钥持久化回调
+    widget.state.deviceId = widget.initialConfig?.deviceId;
+    widget.state.deviceRegistered =
+        widget.initialConfig?.deviceRegistered ?? false;
+    widget.state.onDeviceKeyReceived = (key) async {
+      _encryptionKey = key;
+      _activeConfig?.deviceRegistered = true;
+      _activeConfig?.encryptionKey = key;
+      try {
+        await _saveCurrentConfig();
+      } catch (_) {
+        /* best-effort */
+      }
+    };
+    unawaited(_loadStations());
+    // 首次连上电脑后引导开启通知（一次性；用户主动同意才弹系统框）
+    widget.state.addListener(_maybePromptNotifications);
     // 已保存过配置则自动连接
     if (widget.initialConfig != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _connect());
     }
   }
 
+  bool _notifyPromptHandled = false;
+
+  void _maybePromptNotifications() {
+    if (_notifyPromptHandled ||
+        kIsWeb ||
+        !widget.state.isDesktopConnected) {
+      return;
+    }
+    _notifyPromptHandled = true;
+    unawaited(_promptNotifications());
+  }
+
+  Future<void> _promptNotifications() async {
+    final svc = NotificationService.instance;
+    if (await svc.promptShown) return;
+    // 系统层已允许（如 Android 12- 默认开启）：无需引导
+    if (await svc.notificationsEnabled()) {
+      await svc.markPromptShown();
+      return;
+    }
+    if (!mounted) return;
+    final enable = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text(AppL10n.i.notifyPromptTitle),
+        content: Text(AppL10n.i.notifyPromptBody),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: Text(AppL10n.i.notNow),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: Text(AppL10n.i.enableNotifications),
+          ),
+        ],
+      ),
+    );
+    await svc.markPromptShown();
+    if (enable == true) await svc.requestPermission();
+  }
+
+  Future<void> _loadStations() async {
+    final ws = await loadWorkstations();
+    if (mounted) setState(() => _stations = ws.stations);
+  }
+
+  String _stationLabel(WorkstationEntry s) {
+    if (s.name.isNotEmpty) return s.name;
+    final i = _stations.indexWhere((e) => e.id == s.id);
+    return '${AppL10n.i.workstation} ${i + 1}';
+  }
+
   @override
   void dispose() {
+    widget.state.removeListener(_maybePromptNotifications);
     _urlCtrl.dispose();
     _tokenCtrl.dispose();
     super.dispose();
@@ -78,6 +161,7 @@ class _HomePageState extends State<HomePage> {
       _tokenCtrl.text = pasted.token;
       _pairedToken = pasted.token;
       _encryptionKey = pasted.encryptionKey;
+      _freshPairing = true;
     }
     final url = _urlCtrl.text.trim();
     final token = _tokenCtrl.text.trim();
@@ -86,6 +170,8 @@ class _HomePageState extends State<HomePage> {
     // Persist a node even before pairing; never replace valid stored credentials
     // with an incomplete or unverified manual token.
     if (token.isNotEmpty && key == null) {
+      widget.state.deviceId = null;
+      widget.state.deviceRegistered = false;
       widget.state.connect(RelayClient(url: url, deviceToken: token));
       return false;
     }
@@ -101,6 +187,9 @@ class _HomePageState extends State<HomePage> {
         token != _tokenCtrl.text.trim())
       return false;
     if (token.isNotEmpty) {
+      widget.state.deviceId = _activeConfig?.deviceId;
+      widget.state.deviceRegistered =
+          _activeConfig?.deviceRegistered ?? false;
       widget.state.connect(
         RelayClient(url: url, deviceToken: token, encryptionKey: key),
       );
@@ -108,22 +197,225 @@ class _HomePageState extends State<HomePage> {
     return true;
   }
 
-  Future<void> _saveCurrentConfig() {
+  Future<void> _saveCurrentConfig() async {
     final token = _tokenCtrl.text.trim();
     final key = token == _pairedToken ? _encryptionKey : null;
-    if (token.isNotEmpty && key == null) return Future<void>.value();
+    if (token.isNotEmpty && key == null) return;
+    final prev = _activeConfig;
     final config = AppConfig(
       relayUrl: _urlCtrl.text.trim(),
       deviceToken: token,
       encryptionKey: key,
       modelId: widget.state.selectedModelId,
+      stationId: prev?.stationId,
+      stationName: prev?.stationName,
+      // 设备身份全局唯一（跟手机走，不跟配对走）：重复扫同一台电脑不新建设备；
+      // 重新扫码（_freshPairing）时把老配置的独立 id 收敛到全局 id
+      deviceId: key != null
+          ? (_freshPairing
+                ? await ensureDeviceId()
+                : (prev?.deviceId ?? await ensureDeviceId()))
+          : null,
+      deviceRegistered: _freshPairing ? false : (prev?.deviceRegistered ?? false),
     );
     // Serialize writes so rapid node changes cannot leave an older choice saved.
     final next = _saveQueue
         .catchError((Object _) {})
-        .then((_) => config.save());
+        .then((_) async {
+          await config.save();
+          _activeConfig = config;
+          _freshPairing = false;
+          await _loadStations();
+        });
     _saveQueue = next;
     return next;
+  }
+
+  /// 切换到另一台已配对电脑：重载配置并连接（会话/模型状态随设备变更清空）
+  Future<void> _switchStation(String id) async {
+    final ws = await loadWorkstations();
+    final entry = ws.stations.where((s) => s.id == id).firstOrNull;
+    if (entry == null) return;
+    ws.activeId = id;
+    await saveWorkstations(ws);
+    if (!mounted) return;
+    final config = entry.config;
+    setState(() {
+      _activeConfig = config;
+      _freshPairing = false;
+      _urlCtrl.text = config.relayUrl;
+      _tokenCtrl.text = config.deviceToken;
+      _encryptionKey = config.encryptionKey;
+      _pairedToken = config.deviceToken;
+      _gateway = gatewayForUrl(config.relayUrl);
+      widget.state.selectedModelId = config.modelId;
+    });
+    await _connect();
+  }
+
+  /// 添加工作站：清空当前配对，走扫码/粘贴流程，保存时自动新建工作站
+  Future<void> _addStation() async {
+    setState(() {
+      _activeConfig = null;
+      _freshPairing = true;
+      _tokenCtrl.clear();
+      _encryptionKey = null;
+      _pairedToken = null;
+    });
+    await _openConnectionSettings();
+  }
+
+  /// 管理工作站：重命名 / 删除
+  Future<void> _manageStations() async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDlgState) {
+          Future<void> reload() async {
+            await _loadStations();
+            setDlgState(() {});
+          }
+
+          return AlertDialog(
+            title: Text(AppL10n.i.manageWorkstations),
+            content: SizedBox(
+              width: 320,
+              child: _stations.isEmpty
+                  ? Text(AppL10n.i.noStations)
+                  : ListView(
+                      shrinkWrap: true,
+                      children: [
+                        for (final s in _stations)
+                          ListTile(
+                            dense: true,
+                            leading: Icon(
+                              s.id == _activeConfig?.stationId
+                                  ? Icons.computer
+                                  : Icons.computer_outlined,
+                              size: 20,
+                            ),
+                            title: Text(_stationLabel(s)),
+                            trailing: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  icon: const Icon(Icons.edit_outlined, size: 18),
+                                  tooltip: AppL10n.i.rename,
+                                  onPressed: () async {
+                                    final ctrl = TextEditingController(text: s.name);
+                                    final name = await showDialog<String>(
+                                      context: ctx,
+                                      builder: (dctx) => AlertDialog(
+                                        title: Text(AppL10n.i.rename),
+                                        content: TextField(
+                                          controller: ctrl,
+                                          autofocus: true,
+                                          decoration: InputDecoration(
+                                            hintText: _stationLabel(s),
+                                          ),
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () => Navigator.pop(dctx),
+                                            child: Text(AppL10n.i.cancel),
+                                          ),
+                                          FilledButton(
+                                            onPressed: () => Navigator.pop(
+                                              dctx,
+                                              ctrl.text.trim(),
+                                            ),
+                                            child: Text(AppL10n.i.save),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                    if (name == null || name.isEmpty) return;
+                                    final ws = await loadWorkstations();
+                                    final e = ws.stations
+                                        .where((x) => x.id == s.id)
+                                        .firstOrNull;
+                                    if (e == null) return;
+                                    e.name = name;
+                                    await saveWorkstations(ws);
+                                    if (_activeConfig?.stationId == s.id) {
+                                      _activeConfig?.stationName = name;
+                                    }
+                                    await reload();
+                                  },
+                                ),
+                                IconButton(
+                                  icon: const Icon(
+                                    Icons.delete_outline,
+                                    size: 18,
+                                    color: Colors.red,
+                                  ),
+                                  tooltip: AppL10n.i.delete,
+                                  onPressed: () async {
+                                    final ok = await showDialog<bool>(
+                                      context: ctx,
+                                      builder: (dctx) => AlertDialog(
+                                        title: Text(AppL10n.i.delete),
+                                        content: Text(
+                                          AppL10n.i.deleteStationConfirm,
+                                        ),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(dctx, false),
+                                            child: Text(AppL10n.i.cancel),
+                                          ),
+                                          FilledButton(
+                                            onPressed: () =>
+                                                Navigator.pop(dctx, true),
+                                            child: Text(AppL10n.i.delete),
+                                          ),
+                                        ],
+                                      ),
+                                    );
+                                    if (ok != true) return;
+                                    final ws = await loadWorkstations();
+                                    ws.stations.removeWhere((x) => x.id == s.id);
+                                    final wasActive =
+                                        _activeConfig?.stationId == s.id;
+                                    if (wasActive) {
+                                      ws.activeId = ws.stations.firstOrNull?.id;
+                                    }
+                                    await saveWorkstations(ws);
+                                    await reload();
+                                    if (!mounted) return;
+                                    if (wasActive) {
+                                      final next = ws.stations.firstOrNull;
+                                      if (next != null) {
+                                        Navigator.pop(ctx);
+                                        await _switchStation(next.id);
+                                      } else {
+                                        setState(() {
+                                          _activeConfig = null;
+                                          _tokenCtrl.clear();
+                                          _encryptionKey = null;
+                                          _pairedToken = null;
+                                        });
+                                        widget.state.client?.stop();
+                                      }
+                                    }
+                                  },
+                                ),
+                              ],
+                            ),
+                          ),
+                      ],
+                    ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text(AppL10n.i.close),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   /// Save and connect the selected node; both peers must use the same relay.
@@ -230,6 +522,7 @@ class _HomePageState extends State<HomePage> {
         if (scannedKey != null) {
           _encryptionKey = scannedKey;
           _pairedToken = scannedToken;
+          _freshPairing = true;
         }
         _tokenCtrl.text = tokenCtrl.text.trim();
       });
@@ -352,6 +645,58 @@ class _HomePageState extends State<HomePage> {
           appBar: AppBar(
             title: Text(AppL10n.i.appTitle),
             actions: [
+              PopupMenuButton<String>(
+                icon: const Icon(Icons.computer),
+                tooltip: AppL10n.i.workstations,
+                onSelected: (v) {
+                  if (v == '__add') {
+                    _addStation();
+                  } else if (v == '__manage') {
+                    _manageStations();
+                  } else {
+                    _switchStation(v);
+                  }
+                },
+                itemBuilder: (_) => [
+                  for (final s in _stations)
+                    PopupMenuItem(
+                      value: s.id,
+                      child: Row(
+                        children: [
+                          Icon(
+                            s.id == _activeConfig?.stationId
+                                ? Icons.check
+                                : Icons.computer_outlined,
+                            size: 18,
+                          ),
+                          const SizedBox(width: 8),
+                          Flexible(child: Text(_stationLabel(s))),
+                        ],
+                      ),
+                    ),
+                  if (_stations.isNotEmpty) const PopupMenuDivider(),
+                  PopupMenuItem(
+                    value: '__add',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.add, size: 18),
+                        const SizedBox(width: 8),
+                        Text(AppL10n.i.addWorkstation),
+                      ],
+                    ),
+                  ),
+                  PopupMenuItem(
+                    value: '__manage',
+                    child: Row(
+                      children: [
+                        const Icon(Icons.tune, size: 18),
+                        const SizedBox(width: 8),
+                        Text(AppL10n.i.manageWorkstations),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
               _StatusChip(state: state),
               IconButton(
                 icon: const Icon(Icons.settings),
@@ -719,7 +1064,7 @@ class _SnapshotView extends StatelessWidget {
                       ),
                     ),
                     const PopupMenuDivider(),
-                    if (s.deletable)
+                    if (s.deletable && !state.capabilityOff('session.delete'))
                       PopupMenuItem<String>(
                         value: 'delete',
                         child: Row(

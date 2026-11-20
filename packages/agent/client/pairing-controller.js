@@ -14,10 +14,18 @@ export class PairingController {
     this.snapshot = { ...this.snapshot, ...patch }
     for (const listener of this.listeners) listener()
   }
-  start() { this.active = true; void this.refresh() }
+  start() {
+    this.active = true
+    void this.refresh()
+    // 主密钥会在新设备注册/令牌重置时轮换：静默轮询换图，避免面板挂着扫到失效旧码
+    this.poll = setInterval(() => {
+      if (this.active && !this.snapshot.busy && !this.snapshot.loading) void this.run('read', true)
+    }, 5000)
+  }
   stop() {
     this.active = false
     this.sequence++
+    clearInterval(this.poll)
     this.request?.abort()
     clearTimeout(this.timeout)
     this.snapshot = { data: null, token: null, loading: true, busy: false, error: null }
@@ -28,20 +36,22 @@ export class PairingController {
     if (this.snapshot.token !== null) { this.set({ token: null }); return Promise.resolve() }
     return this.run('reveal')
   }
-  async run(operation) {
+  async run(operation, silent = false) {
     if (!this.active) return
     this.request?.abort()
     clearTimeout(this.timeout)
     const request = this.request = new AbortController()
     const sequence = ++this.sequence
     const current = () => this.active && sequence === this.sequence
-    const clearData = operation !== 'reveal'
-    this.set({ ...(clearData ? { data: null } : {}), token: null, loading: operation === 'read', busy: true, error: null })
+    const clearData = operation !== 'reveal' && !silent
+    if (!silent) {
+      this.set({ ...(clearData ? { data: null } : {}), token: null, loading: operation === 'read', busy: true, error: null })
+    }
     const timeout = this.timeout = setTimeout(() => {
       if (!current()) return
       request.abort()
       this.sequence++
-      this.set({ loading: false, busy: false, error: 'failed' })
+      if (!silent) this.set({ loading: false, busy: false, error: 'failed' })
     }, this.timeoutMs)
     try {
       const value = await this.api[operation](request.signal)
@@ -51,13 +61,19 @@ export class PairingController {
         this.set({ token: value.token })
       } else {
         if (typeof value.qrSvg !== 'string' || !value.qrSvg.startsWith('<svg') || typeof value.maskedToken !== 'string') throw new Error('Invalid response')
-        this.set({ data: value })
+        if (silent) {
+          // 仅在二维码变化时换图，并收起已失效的明文配对码；无变化不打扰 UI
+          if (value.qrSvg !== this.snapshot.data?.qrSvg) this.set({ data: value, token: null })
+        } else {
+          this.set({ data: value })
+        }
       }
     } catch (error) {
+      if (silent) return // 轮询失败保留旧图，下次再试
       if (current() && !request.signal.aborted) this.set({ error: error.code === 'forbidden' ? 'forbidden' : 'failed' })
     } finally {
       clearTimeout(timeout)
-      if (current()) this.set({ loading: false, busy: false })
+      if (current() && !silent) this.set({ loading: false, busy: false })
     }
   }
 }

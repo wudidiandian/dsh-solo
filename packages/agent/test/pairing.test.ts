@@ -34,6 +34,25 @@ it('discovers the next available port without exposing credentials through disco
   expect(credentials.headers.get('cache-control')).toBe('no-store')
 })
 
+it('QR endpoint serves the current key and updates after rotation', async () => {
+  let key = Buffer.alloc(32, 7).toString('base64url')
+  pairing = new PairingServer({ getToken: () => 'private-pairing-token', getEncryptionKey: () => key, getRelayUrl: () => 'wss://private.example/ws', resetToken: async () => 'new-token' })
+  pairing.start()
+  const deadline = Date.now() + 4000
+  while (!pairing.address && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10))
+  expect(pairing.address).toBeTruthy()
+  const first = await fetch(`${pairing.address}/api/qr`)
+  expect(first.headers.get('content-type')).toContain('image/svg+xml')
+  const svg1 = await first.text()
+  expect(svg1).toContain('<svg')
+  // 跨站读取二维码同样被拒
+  expect((await fetch(`${pairing.address}/api/qr`, { headers: { Origin: 'https://attacker.example' } })).status).toBe(403)
+  // 主密钥轮换后 QR 内容变化（页面轮询据此换图）
+  key = Buffer.alloc(32, 9).toString('base64url')
+  const svg2 = await (await fetch(`${pairing.address}/api/qr`)).text()
+  expect(svg2).not.toBe(svg1)
+})
+
 it('ignores unrelated responses and refuses a discovery response that redirects outside loopback', async () => {
   const fetcher = async (url: string) => {
     if (url.includes(':8791/')) return { ok: true, json: async () => ({ service: 'dsh-solo-pairing', url: 'http://127.0.0.1:8791' }) }

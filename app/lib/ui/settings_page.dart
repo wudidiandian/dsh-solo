@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -7,6 +9,7 @@ import 'package:url_launcher/url_launcher.dart';
 import '../l10n/app_l10n.dart';
 import '../relay/relay_client.dart';
 import '../state/app_state.dart';
+import '../state/notification_service.dart';
 
 String _t(String zh, String en) => AppL10n.i.isEn ? en : zh;
 
@@ -38,12 +41,31 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   late final Future<PackageInfo?> _package;
+  bool? _notifyEnabled;
   @override
   void initState() {
     super.initState();
     _package = PackageInfo.fromPlatform()
         .then<PackageInfo?>((info) => info)
         .catchError((_) => null);
+    unawaited(_loadNotifyStatus());
+  }
+
+  Future<void> _loadNotifyStatus() async {
+    final enabled = await NotificationService.instance.notificationsEnabled();
+    if (mounted) setState(() => _notifyEnabled = enabled);
+  }
+
+  /// 开启：请求系统权限；被永久拒绝则跳系统设置。关闭：只能去系统设置操作。
+  Future<void> _setNotify(bool value) async {
+    final svc = NotificationService.instance;
+    if (value) {
+      final granted = await svc.requestPermission();
+      if (!granted) await svc.openSystemSettings();
+    } else {
+      await svc.openSystemSettings();
+    }
+    await _loadNotifyStatus();
   }
 
   void _open(String title, List<Widget> content) {
@@ -277,6 +299,18 @@ class _SettingsPageState extends State<SettingsPage> {
                   subtitle: Text(_connectionLabel(widget.state)),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: widget.onConfigureConnection,
+                ),
+                const Divider(height: 1, indent: 56),
+                SwitchListTile(
+                  secondary: const Icon(Icons.notifications_outlined),
+                  title: Text(AppL10n.i.notificationReminders),
+                  subtitle: Text(
+                    _notifyEnabled == true
+                        ? AppL10n.i.notificationsOn
+                        : AppL10n.i.notificationsOff,
+                  ),
+                  value: _notifyEnabled ?? false,
+                  onChanged: kIsWeb ? null : _setNotify,
                 ),
                 const Divider(height: 1, indent: 56),
                 ListTile(

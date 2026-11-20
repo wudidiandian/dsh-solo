@@ -38,7 +38,7 @@ void main() {
       expect(saved?.encryptionKey, key);
       expect(saved?.deviceToken, 'test-token');
       final secure = await const FlutterSecureStorage().read(
-        key: 'dsh_solo_pairing_v2',
+        key: 'dsh_solo_workstations_v1',
       );
       expect(secure, contains(key));
       expect(secure, contains('test-token'));
@@ -57,10 +57,15 @@ void main() {
     final config = await AppConfig.load();
     expect(config?.deviceToken, 'LEGACY_SECRET_TOKEN');
     expect(config?.encryptionKey, 'LEGACY_SECRET_KEY');
+    expect(config?.stationId, isNotNull);
     expect(await file.exists(), isFalse);
     expect(
-      await const FlutterSecureStorage().read(key: 'dsh_solo_pairing_v2'),
+      await const FlutterSecureStorage().read(key: 'dsh_solo_workstations_v1'),
       contains('LEGACY_SECRET_KEY'),
+    );
+    expect(
+      await const FlutterSecureStorage().read(key: 'dsh_solo_pairing_v2'),
+      isNull,
     );
     // A previously interrupted cleanup is also retried when secure settings already exist.
     await file.writeAsString('{"deviceToken":"STALE_PLAINTEXT"}');

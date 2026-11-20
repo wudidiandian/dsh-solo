@@ -19,6 +19,8 @@ export interface SoloRelayClientOptions {
   deviceToken: string
   agentInfo?: string
   encryptionKey?: string
+  /** 设备专属密钥提供器（设备注册表）；hello 依次尝试主密钥与各设备密钥 */
+  deviceKeys?: () => Array<{ id: string; key: string }>
   /** Explicit legacy fixture support; production never enables this. */
   allowUnencryptedForTests?: boolean
   /** 心跳间隔（默认 30s） */
@@ -54,7 +56,7 @@ export class SoloRelayClient extends EventEmitter {
   private pongTimer: NodeJS.Timeout | null = null
   private disposed = false
   private stopped = false
-  private securePeers = new Map<string, { channel: SecureChannel; ready: boolean; lastSeen: number }>()
+  private securePeers = new Map<string, { channel: SecureChannel; ready: boolean; lastSeen: number; deviceId: string | null }>()
   private latestSnapshot: Envelope | null = null
   private clearSecurePeers(): void {
     for (const peer of this.securePeers.values()) peer.channel.destroy()
@@ -83,6 +85,7 @@ export class SoloRelayClient extends EventEmitter {
     this.opts = {
       agentInfo: options.agentInfo,
       encryptionKey: options.encryptionKey ?? '',
+      deviceKeys: options.deviceKeys ?? (() => []),
       allowUnencryptedForTests: options.allowUnencryptedForTests ?? false,
       url: options.url,
       deviceToken: options.deviceToken,
@@ -170,6 +173,27 @@ export class SoloRelayClient extends EventEmitter {
     }
     if (!this.retryTimer) this.connect()
     // else 已有待执行的重连定时器，其 connect() 会读取新 token
+  }
+
+  /** 当前连接对端关联的设备 id（主密钥握手的旧版 App 为 null） */
+  deviceIdOf(peerId: string | undefined): string | null {
+    return peerId ? this.securePeers.get(peerId)?.deviceId ?? null : null
+  }
+
+  /** 更新主配对密钥（设备注册后轮换）：不重连，已建立的加密会话不受影响 */
+  setEncryptionKey(key: string): void {
+    decodeKey(key)
+    this.opts.encryptionKey = key
+  }
+
+  /** 撤销设备：立即断开该设备的所有加密会话 */
+  closeDevice(deviceId: string): void {
+    for (const [id, peer] of this.securePeers) {
+      if (peer.deviceId !== deviceId) continue
+      this.wire({ v: 1, type: 'e2ee.close', peerId: id, payload: { reason: 'device-revoked' } })
+      peer.channel.destroy()
+      this.securePeers.delete(id)
+    }
   }
 
   // -------------------------------------------------------------------------
@@ -287,8 +311,17 @@ export class SoloRelayClient extends EventEmitter {
           if (this.securePeers.size >= 32) return
           const hello = env.payload as SecureHello
           if (hello.id !== id) return
-          const accepted = acceptSecureHello(this.opts.deviceToken, this.opts.encryptionKey, hello)
-          this.securePeers.set(id, { channel: accepted.channel, ready: false, lastSeen: Date.now() })
+          // 先试主配对密钥（QR/旧版 App），再试各设备专属密钥；命中设备密钥则关联 deviceId
+          let accepted: ReturnType<typeof acceptSecureHello> | null = null
+          let deviceId: string | null = null
+          try { accepted = acceptSecureHello(this.opts.deviceToken, this.opts.encryptionKey, hello) } catch { /* try device keys */ }
+          if (!accepted) {
+            for (const device of this.opts.deviceKeys()) {
+              try { accepted = acceptSecureHello(this.opts.deviceToken, device.key, hello); deviceId = device.id; break } catch { /* next key */ }
+            }
+          }
+          if (!accepted) throw new Error('Pairing authentication failed')
+          this.securePeers.set(id, { channel: accepted.channel, ready: false, lastSeen: Date.now(), deviceId })
           this.wire({ v: 1, type: 'e2ee.welcome', peerId: id, payload: accepted.welcome })
         } else if (env.type === 'e2ee.data') {
           const peer = this.securePeers.get(id)

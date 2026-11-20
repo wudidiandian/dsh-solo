@@ -159,6 +159,34 @@ class AppL10n {
   String get followDesktopDefault => _t('跟随电脑端默认', 'Follow desktop default');
   String get noModelsHint => _t('快照中没有模型列表（电脑端未连接或宿主模型目录未就绪）',
       'No models in the snapshot (desktop offline, or model catalog not ready)');
+  String get modelNewSessionOnly => _t('当前电脑端不支持切换已有会话的模型，选择仅对新建会话生效',
+      'This desktop cannot switch models of existing sessions; the choice applies to new sessions only');
+  String get stopTask => _t('停止任务', 'Stop task');
+  String get taskStopped => _t('任务已停止', 'Task stopped');
+  String get notifyPromptTitle => _t('开启通知提醒', 'Enable notification alerts');
+  String get notifyPromptBody => _t(
+    '退到后台时，任务完成、需要审批或任务被停止会通过系统通知提醒你，点击通知可直达对应会话。',
+    'When the app is in the background, system notifications alert you to completed tasks, pending approvals or stopped tasks. Tap a notification to open its session.',
+  );
+  String get enableNotifications => _t('开启通知', 'Enable');
+  String get notNow => _t('暂不', 'Not now');
+  String get notificationReminders => _t('通知提醒', 'Notification alerts');
+  String get notificationsOn => _t('已开启', 'Enabled');
+  String get notificationsOff => _t(
+    '未开启；开启后 App 在后台也能收到任务提醒',
+    'Disabled; enable to receive task alerts while the app is in the background',
+  );
+  String get workstations => _t('工作站', 'Workstations');
+  String get workstation => _t('工作站', 'Workstation');
+  String get addWorkstation => _t('添加工作站', 'Add workstation');
+  String get manageWorkstations => _t('管理工作站', 'Manage workstations');
+  String get noStations => _t('暂无已保存的工作站', 'No saved workstations');
+  String get deleteStationConfirm => _t(
+    '删除该工作站的配对？删除后需重新扫码才能再次连接这台电脑。',
+    'Delete this workstation pairing? You must re-scan the QR to connect this computer again.',
+  );
+  String get close => _t('关闭', 'Close');
+  String get save => _t('保存', 'Save');
   String get pickPcFile => _t('选择电脑文件', 'Pick a PC file');
   String get noDirTreeHint =>
       _t('快照中没有目录树（电脑端未连接？）', 'No directory tree in the snapshot (desktop connected?)');

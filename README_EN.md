@@ -1,6 +1,6 @@
 # DSH-SOLO
 
-> **Version 0.1.6 is now stable**, with history synchronization, smoother scrolling, mobile approvals and questions, and China/global gateway selection. [Release packages](https://github.com/wudidiandian/dsh-solo/releases/tag/v0.1.6) · [Download Android APK](https://github.com/wudidiandian/dsh-solo/releases/latest/download/dsh-solo.apk). Update both the desktop plugin and mobile app.
+> **Version 0.1.7 is now stable**, adding device management with per-device revocation, multiple workstations, background system notifications, stopping desktop tasks from the phone, desktop session title sync, and pairing QR codes that refresh automatically on key rotation. [Release packages](https://github.com/wudidiandian/dsh-solo/releases/tag/v0.1.7) · [Download Android APK](https://github.com/wudidiandian/dsh-solo/releases/latest/download/dsh-solo.apk). Update both the desktop plugin and mobile app.
 
 [中文](README.md) | **English**
 
@@ -22,7 +22,7 @@ dsh-solo-agent
 
 Select **Enable now**. If **Phone pairing** does not appear in the sidebar, fully quit the desktop app through its application menu and reopen it; closing the window may only hide it to the tray.
 
-Without a version suffix, installation uses npm's `latest` stable tag. To pin a version, enter `dsh-solo-agent@0.1.6`. If the package cannot be found, switch to the **official npm registry** while mirrors catch up. Existing installations need an update or reinstall as prompted by the host; pairing data in your home directory's `.dsh-solo` can normally be retained.
+Without a version suffix, installation uses npm's `latest` stable tag. To pin a version, enter `dsh-solo-agent@0.1.7`. If the package cannot be found, switch to the **official npm registry** while mirrors catch up. Existing installations need an update or reinstall as prompted by the host; pairing data in your home directory's `.dsh-solo` can normally be retained.
 
 <details>
 <summary>Desktop plugin installation screenshots</summary>
@@ -97,9 +97,20 @@ Select the directory rather than a JavaScript file or an unextracted archive. Ke
 
 Discovery in the third-party `dsh-market` requires separate catalog inclusion; npm publication or a public GitHub repository does not automatically list the plugin.
 
+## Features
+
+- View sessions and live replies; events resynchronize after reconnects. Sessions created or renamed on the desktop keep their titles on the phone.
+- Create tasks, pick models, rename and delete sessions; stop a running desktop turn from the phone.
+- Allow or deny remote approvals and answer model questions on the phone.
+- Upload images and files, create sessions under desktop projects, send document links.
+- Read Markdown replies and code diffs.
+- Multiple workstations: pair one phone with several computers and switch between them; re-scanning the same computer updates the existing pairing.
+- Device management: the desktop pairing page lists paired phones and can revoke a single device; a revoked phone must re-scan the QR.
+- Background system notifications for completed tasks, pending approvals and stopped tasks; tapping opens the session (while the app process is alive).
+
 ## Current security and privacy
 
-Version 0.1.5 implements **phone-to-plugin end-to-end encryption**. An independent QR pairing secret authenticates an ephemeral X25519 exchange. Each phone gets a separate session using AES-256-GCM with integrity and ordered-message replay checks. Conversations, tool results, project lists, approvals and attachment contents are encrypted at the endpoints.
+Version 0.1.5 implements **phone-to-plugin end-to-end encryption**. An independent QR pairing secret authenticates an ephemeral X25519 exchange. Each phone gets a separate session using AES-256-GCM with integrity and ordered-message replay checks. Conversations, tool results, project lists, approvals and attachment contents are encrypted at the endpoints. Since 0.1.7 each registered phone receives a **device-specific key** and the master pairing key rotates: the desktop can revoke a single phone, invalidating both its old device key and any old QR code it holds; the pairing page QR refreshes automatically on rotation.
 
 The relay forwards ciphertext without pairing secrets or decryption keys. Connection IPs, routing tokens, timing and traffic sizes remain visible. Reconnection history is re-encrypted by the desktop; continue using WSS for public deployments. App pairing credentials use platform secure storage; local session caches do not yet have application-level encryption at rest.
 
@@ -132,12 +143,14 @@ Run the local relay with `npm run relay`. Override the plugin's `relayUrl` for y
 Completed and planned capabilities are listed below. Priorities may change based on feedback and development progress; see release notes for available functionality.
 
 - [x] **End-to-end encryption**: encrypted conversations, tools, projects, approvals and attachments between the phone and plugin, secure credential storage and replay protection.
-- [ ] **Encryption key management**: per-device revocation, device management and key lifecycle improvements.
+- [x] **Encryption key management**: device-specific keys, paired-device list with per-device revocation, key rotation and automatic QR refresh.
+- [x] **Multiple workstations**: pair one phone with several computers and switch between them; re-scanning the same computer updates the existing pairing.
+- [x] **System notifications**: background alerts for completed tasks, pending approvals and stopped tasks, opening the session on tap.
+- [ ] **Offline push**: notifications after the app process is killed; requires FCM or vendor push channels, not implemented yet.
+- [x] **Stop tasks from the phone**: interrupt the running desktop turn from a session.
 - [ ] **iOS app**: iPhone support, build and signing setup, and TestFlight distribution.
 - [ ] **HarmonyOS app**: platform adaptation, HAP builds and device testing.
-- [ ] **System notifications and offline push**: notify users when tasks finish or need approval.
 - [ ] **Voice input**: turn speech into task text for sending instructions from a phone.
-- [ ] **Multiple workstations**: switch between and manage sessions and tasks on multiple computers.
 
 Share feature requests and use cases through [Issues](https://github.com/wudidiandian/dsh-solo/issues).
 

@@ -1,4 +1,6 @@
-import { resolvePairingKey } from './e2ee.js'
+import { resolvePairingKey, rotatePairingKey } from './e2ee.js'
+import { DeviceRegistry } from './devices.js'
+import { HostAdapter } from './host-adapter.js'
 import { randomUUID } from 'node:crypto'
 import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -124,12 +126,16 @@ export function apply(ctx: Context, config: Config) {
     let encryptionKey = await resolvePairingKey(stateDir, deviceToken)
     if (lifetime.signal.aborted) return
     const relayUrl = config.relayUrl ?? DEFAULT_RELAY_URL
+    const devices = new DeviceRegistry(stateDir)
+    await devices.load()
+    if (lifetime.signal.aborted) return
 
     const relayClient = new SoloRelayClient({
       url: relayUrl,
       deviceToken,
       agentInfo: 'dsh-solo-agent',
       encryptionKey,
+      deviceKeys: () => devices.keys(),
     })
     client = relayClient
     // 必须监听 error：EventEmitter emit('error') 无监听器时会以 uncaughtException 逃逸，
@@ -147,7 +153,8 @@ export function apply(ctx: Context, config: Config) {
     // - 会话事件：session/event 监听参数为 (session, event)（commit() callbackArgs）
     // - ctx.authorization 是凭证注册表而非工具审批；真实审批钩子未定位（降级告警）
     // - ctx.llm.listModels 不存在；模型列表暂空，待映射 dsh-llm
-    const anyCtx = ctx as any
+    // 宿主访问统一经 HostAdapter（能力探测与 API 形状收敛在该文件，见其兼容矩阵注释）
+    const host = new HostAdapter(ctx)
     // 本插件创建的 agent 句柄（dispose 是能力对象，只有持有者能删除会话）
     const handles = new Map<string, any>()
     // 会话标题缓存（session/title 事件 last-wins，供快照展示）
@@ -158,7 +165,7 @@ export function apply(ctx: Context, config: Config) {
     // 重试 + 成功后缓存，避免每次快照都白等。
     let modelsCache: unknown[] | null = null
     const services: HarnessServices = {
-    listProjects: () => listProjects(anyCtx.workspaceRegistry),
+    listProjects: () => listProjects(host.workspaceRegistry),
     listModels: async () => {
       // 快速失败版（2026-10-28）：只试一次，失败/为空立即返回 []，不阻塞快照上报。
       // 目录就绪由 bootstrap 的轮询负责——拿到非空目录后触发 core.publishSnapshot()
@@ -168,9 +175,9 @@ export function apply(ctx: Context, config: Config) {
       // provider 参数，无参调用抛 "no adapter registered for provider \"undefined\""。
       // provider 取宿主默认模型的 provider，缺省回落账号路。
       if (modelsCache) return modelsCache
-      const llm = anyCtx.llm
+      const llm = host.llm
       if (typeof llm?.listModels !== 'function') return []
-      const provider = anyCtx.agentDefaultModel?.currentSelection?.()?.provider ?? 'deepseek-account'
+      const provider = host.agentDefaultModel?.currentSelection?.()?.provider ?? 'deepseek-account'
       try {
         const r = await llm.listModels(provider)
         if (Array.isArray(r) && r.length) {
@@ -184,13 +191,13 @@ export function apply(ctx: Context, config: Config) {
     },
     listSessions: async () => {
       let list: any[] = []
-      if (typeof anyCtx.agents?.list === 'function') {
-        list = anyCtx.agents
+      if (typeof host.agents?.list === 'function') {
+        list = host.agents
           .list()
           .map((a: any) => mapAgentSummary(a, titles, handles))
           .filter(Boolean)
-      } else if (typeof anyCtx.sessions?.list === 'function') {
-        list = anyCtx.sessions
+      } else if (typeof host.sessions?.list === 'function') {
+        list = host.sessions
           .list()
           .map((s: any) => ({
             id: s?.header?.id ?? s?.id,
@@ -201,11 +208,26 @@ export function apply(ctx: Context, config: Config) {
           }))
           .filter((e: any) => e?.id)
       }
+      // 标题同步：电脑端创建/改名的会话，从宿主日志折叠最新 session/title（last-wins），
+      // 插件停机期间的改名也能在下次快照补齐；失败不阻塞快照
+      const missing = list.filter((e: any) => e?.id && !titles.get(e.id)).map((e: any) => e.id)
+      if (missing.length && typeof host.sessionQuery?.readTitleSnapshots === 'function') {
+        try {
+          const results = await host.sessionQuery.readTitleSnapshots(missing)
+          for (const r of results ?? []) {
+            const t = r?.status === 'fulfilled' ? r.value?.title?.title : undefined
+            if (typeof t === 'string' && t) titles.set(r.sessionId, t)
+          }
+        } catch {
+          // 标题折叠失败保持无标题，App 显示兜底文案
+        }
+      }
+      for (const e of list) if (e && !e.title) e.title = titles.get(e.id)
       // 排序：从新到旧（App 会话列表 newest-first，新会话置顶）
       return list.sort((x, y) => (Number(y?.updatedAt) || 0) - (Number(x?.updatedAt) || 0))
     },
     createSession: async (opts) => {
-      if (typeof anyCtx.agents?.create !== 'function') {
+      if (typeof host.agents?.create !== 'function') {
         throw new Error('host ctx.agents.create not available')
       }
       // dsh-agent-loop 的 createAgent 要求 sessionId 必填（同时用作 agent id，
@@ -213,9 +235,9 @@ export function apply(ctx: Context, config: Config) {
       // cwd 必须落在工作区内，否则会话持久化进 _no-cwd 桶，宿主 web UI 加载不到其历史；
       // agentOptions 必须绑定模型（宿主默认值来自 agentDefaultModel 服务），否则系统
       // 提示词组装时 {model} 变量无值，整个 turn 空跑（deployment/persona-pref 报错）
-      const project = opts.projectId ? await requireProject(anyCtx.workspaceRegistry, opts.projectId) : null
+      const project = opts.projectId ? await requireProject(host.workspaceRegistry, opts.projectId) : null
       const cwd = project?.path ?? opts.cwd ?? config.workspaceRoots?.[0]
-      const defaults = anyCtx.agentDefaultModel?.currentSelection?.()
+      const defaults = host.agentDefaultModel?.currentSelection?.()
       const model = opts.model ?? defaults?.model
       // App 端指定模型时在模型目录里反查 provider，保证 model/provider 配对
       // 正确（宿主默认选区的 provider 可能与所选模型不同源）
@@ -230,10 +252,10 @@ export function apply(ctx: Context, config: Config) {
       }
       // Match the desktop Session controller: resolve the configured default and
       // mount it inside the unpublished Agent scope, before any prompt can run.
-      const presets = anyCtx.agentPresets
+      const presets = host.agentPresets
       const preset = await presets.resolve()
       if (lifetime.signal.aborted) throw new Error('Plugin stopped')
-      const handle = await anyCtx.agents.create({
+      const handle = await host.agents.create({
         sessionId: `session-${randomUUID()}`,
         meta: { ...(cwd ? { cwd } : {}), agentPreset: preset.id },
         setup: async (agentCtx: Context) => {
@@ -251,6 +273,8 @@ export function apply(ctx: Context, config: Config) {
           : {}),
       })
       const session = agentToSession(handle.agent)
+      // 活 agent 探测动态能力（setModel / cancel）；变化时重报快照让 App 点亮对应 UI
+      if (host.noteAgentCapabilities(handle.agent)) void core?.publishSnapshot()
       try {
         if (lifetime.signal.aborted) throw new Error('Plugin stopped')
         if (project) await project.attachSession(session.id)
@@ -265,11 +289,19 @@ export function apply(ctx: Context, config: Config) {
       return session
     },
     getSession: async (id) => {
-      const agent = anyCtx.agents?.get?.(id)
+      const agent = host.agents?.get?.(id)
+      if (agent && host.noteAgentCapabilities(agent)) void core?.publishSnapshot()
       return agent ? agentToSession(agent) : null
     },
+    interruptSession: async (id) => {
+      const agent = host.agents?.get?.(id)
+      if (!agent) throw new Error(`session not found: ${id}`)
+      if (typeof agent.cancel !== 'function') throw new Error('host agent.cancel not available')
+      // kind:'user' = 用户主动停止：清空排队输入并中止当前回合（宿主语义）
+      agent.cancel({ kind: 'user' })
+    },
     renameSession: async (id, title) => {
-      const session = anyCtx.agents?.get?.(id)?.session ?? anyCtx.sessions?.get?.(id)
+      const session = host.agents?.get?.(id)?.session ?? host.sessions?.get?.(id)
       if (!session) throw new Error(`session not found: ${id}`)
       // session/title 为日志型事件（非 surface），last-wins；source 为单键 kind
       await session.append('session/title', {
@@ -296,7 +328,7 @@ export function apply(ctx: Context, config: Config) {
       void core?.publishSnapshot()
     },
     readHistory: async (id) => {
-      const snapshot = await anyCtx.sessionQuery.readSession(id)
+      const snapshot = await host.sessionQuery.readSession(id)
       return snapshot.events.map((event: any) => ({
         kind: event.type, data: event.data, seq: event.seq,
         seqId: HOST_HISTORY_OFFSET + event.seq + 1, historyEpoch: 'host-v1',
@@ -304,19 +336,16 @@ export function apply(ctx: Context, config: Config) {
     },
     onSessionEvent: (cb) => {
       // 监听参数为 (session, event)；在插件 ctx 注册（跨上下文投递范围待真机验证）
-      if (typeof anyCtx.on === 'function') {
-        return anyCtx.on('session/event', (...args: unknown[]) => {
-          const normalized = normalizeSessionEventArgs(args)
-          if (!normalized) return
-          const [sid, ev] = normalized
-          const data = ev.data as { title?: unknown } | undefined
-          if (ev.kind === 'session/title' && typeof data?.title === 'string') {
-            titles.set(sid, data.title)
-          }
-          cb(sid, ev)
-        })
-      }
-      return () => {}
+      return host.on('session/event', (...args: unknown[]) => {
+        const normalized = normalizeSessionEventArgs(args)
+        if (!normalized) return
+        const [sid, ev] = normalized
+        const data = ev.data as { title?: unknown } | undefined
+        if (ev.kind === 'session/title' && typeof data?.title === 'string') {
+          titles.set(sid, data.title)
+        }
+        cb(sid, ev)
+      })
     },
     // Real host requests are composed by InteractionBroker; keep the legacy
     // core fixture hook inert instead of calling a nonexistent registerHandler.
@@ -328,7 +357,7 @@ export function apply(ctx: Context, config: Config) {
       changed: () => { void core?.publishSnapshot() },
       mobileAvailable: () => relayClient.connectedMobileCount > 0,
     })
-    interactions.install(anyCtx)
+    interactions.install(host.context)
     core = new AgentCore(relayClient, {
       interactions,
       services,
@@ -339,10 +368,18 @@ export function apply(ctx: Context, config: Config) {
       relayUrl,
       rotateDeviceToken: async (t) => {
         encryptionKey = await resolvePairingKey(stateDir, t)
+        // 令牌重置 = 全量重新配对：旧设备密钥随旧令牌一并作废
+        await devices.clear()
         relayClient.reconnectWithToken(t, encryptionKey)
       },
-      // Project names are requested on demand; do not pre-scan project files.
-      buildSnapshot: async () => ({}),
+      devices,
+      rotatePairingKey: async () => {
+        encryptionKey = await rotatePairingKey(stateDir, deviceToken)
+        relayClient.setEncryptionKey(encryptionKey)
+        return encryptionKey
+      },
+      // 能力协商：宿主版本与能力表随快照上报，App 动态启用/降级 UI
+      buildSnapshot: async () => ({ hostVersion: host.hostVersion, capabilities: host.capabilities() }),
       listDir: (p) => listDirectorySafe(p, config.workspaceRoots ?? []),
     })
 
@@ -355,9 +392,15 @@ export function apply(ctx: Context, config: Config) {
         if (!core) throw new Error('agent not ready')
         return core.resetDeviceToken()
       },
+      getDevices: () => devices.list(),
+      revokeDevice: async (id) => {
+        if (!core) throw new Error('agent not ready')
+        return core.revokeDevice(id)
+      },
+      renameDevice: (id, name) => devices.rename(id, name),
     })
     pairing.start()
-    disposePairingBridge = registerPairingBridge(anyCtx.connection, {
+    disposePairingBridge = registerPairingBridge(host.connection, {
       getToken: () => core?.getDeviceToken() ?? '',
       getEncryptionKey: () => encryptionKey,
       getRelayUrl: () => relayUrl,
@@ -377,30 +420,28 @@ export function apply(ctx: Context, config: Config) {
     // durable 日志——durable 侧只有回合结束才 commit assistant/message，这
     // 就是 App"最后一下全出"的原因。这里把增量帧映射为 session.stream 直通
     // relay；agent-scoped dispatch 按宿主文档全局监听即可收到所有 agent。
-    if (typeof anyCtx.on === 'function') {
-      // Process-local state covers turns that started before the phone joined,
-      // including desktop-created agents waiting for tools or approval.
-      anyCtx.on('agent/status', () => { void core?.publishSnapshot() })
-      anyCtx.on('agent/assistant-stream', (payload: unknown) => {
-        try {
-          const p = payload as { agent?: { session?: { header?: { id?: string } } }; frame?: {
-            type: string
-            chunk?: { type: string; text?: string }
-          } }
-          const sid = p?.agent?.session?.header?.id
-          const frame = p?.frame
-          if (!sid || !core || frame?.type !== 'chunk') return
-          const chunk = frame.chunk
-          if (chunk?.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text) {
-            core.sendStreamDelta(sid, 'text-delta', chunk.text)
-          } else if (chunk?.type === 'reasoning-delta' && typeof chunk.text === 'string' && chunk.text) {
-            core.sendStreamDelta(sid, 'reasoning-delta', chunk.text)
-          }
-        } catch {
-          // 流帧转发失败不影响会话主链路
+    // Process-local state covers turns that started before the phone joined,
+    // including desktop-created agents waiting for tools or approval.
+    host.on('agent/status', () => { void core?.publishSnapshot() })
+    host.on('agent/assistant-stream', (payload: unknown) => {
+      try {
+        const p = payload as { agent?: { session?: { header?: { id?: string } } }; frame?: {
+          type: string
+          chunk?: { type: string; text?: string }
+        } }
+        const sid = p?.agent?.session?.header?.id
+        const frame = p?.frame
+        if (!sid || !core || frame?.type !== 'chunk') return
+        const chunk = frame.chunk
+        if (chunk?.type === 'text-delta' && typeof chunk.text === 'string' && chunk.text) {
+          core.sendStreamDelta(sid, 'text-delta', chunk.text)
+        } else if (chunk?.type === 'reasoning-delta' && typeof chunk.text === 'string' && chunk.text) {
+          core.sendStreamDelta(sid, 'reasoning-delta', chunk.text)
         }
-      })
-    }
+      } catch {
+        // 流帧转发失败不影响会话主链路
+      }
+    })
     // 先注册处理器（core.start）再发起连接；连接与重连由 SoloRelayClient.start 驱动
     relayClient.start()
 

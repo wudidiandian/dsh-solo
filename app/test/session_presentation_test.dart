@@ -474,4 +474,50 @@ void main() {
     expect(state.isBusy('desktop-running'), isFalse);
     state.dispose();
   });
+
+  testWidgets('user-stopped turn renders neutral stopped line, not failure', (
+    tester,
+  ) async {
+    final state = TimelineState()
+      ..relayStatus = RelayStatus.open
+      ..agentOnline = true;
+    state.applyEnvelope(
+      event(1, 'turn/end', data: {
+        'turn': 1,
+        'reason': {
+          'kind': 'aborted',
+          'reason': {'kind': 'user'},
+        },
+      }),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: SessionPage(state: state, sessionId: 'presentation-test')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text(AppL10n.i.taskStopped), findsOneWidget);
+    expect(find.textContaining('任务失败'), findsNothing);
+    state.dispose();
+  });
+
+  testWidgets('error turn end still renders failure line', (tester) async {
+    final state = TimelineState()
+      ..relayStatus = RelayStatus.open
+      ..agentOnline = true;
+    state.applyEnvelope(
+      event(1, 'turn/end', data: {
+        'turn': 1,
+        'reason': {
+          'kind': 'error',
+          'error': {'message': 'boom'},
+        },
+      }),
+    );
+    await tester.pumpWidget(
+      MaterialApp(home: SessionPage(state: state, sessionId: 'presentation-test')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining('任务失败'), findsOneWidget);
+    expect(find.text(AppL10n.i.taskStopped), findsNothing);
+    state.dispose();
+  });
 }

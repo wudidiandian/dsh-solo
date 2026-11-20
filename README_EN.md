@@ -2,6 +2,8 @@
 
 > **Version 0.1.7 is now stable**, adding device management with per-device revocation, multiple workstations, background system notifications, stopping desktop tasks from the phone, desktop session title sync, and pairing QR codes that refresh automatically on key rotation. [Release packages](https://github.com/wudidiandian/dsh-solo/releases/tag/v0.1.7) · [Download Android APK](https://github.com/wudidiandian/dsh-solo/releases/latest/download/dsh-solo.apk). Update both the desktop plugin and mobile app.
 
+> **Upgrading to 0.1.7**: device management, multiple workstations, background notifications and stopping tasks from the phone require **both the 0.1.7 desktop plugin and the 0.1.7 app**; updating only one side keeps basic features working but leaves the new ones unavailable. Pairing data is retained and re-scanning is usually unnecessary; a phone revoked on the desktop pairing page must re-scan the QR to pair again. The relay protocol is unchanged in this release, so self-hosted servers need no redeployment.
+
 [中文](README.md) | **English**
 
 Use DeepSeek Harness on your computer from an Android phone: follow sessions, send tasks, select models, transfer attachments and respond to approvals.

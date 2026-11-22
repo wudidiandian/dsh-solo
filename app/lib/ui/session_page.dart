@@ -930,6 +930,12 @@ class _SessionPageState extends State<SessionPage> {
                       _ModelPicker(
                         state: state,
                         existingSession: _activeSessionId != null,
+                        sessionModel: _activeSessionId == null
+                            ? null
+                            : state.sessions
+                                  .where((s) => s.id == _activeSessionId)
+                                  .firstOrNull
+                                  ?.model,
                       ),
                       _AttachmentStrip(
                         state: state,
@@ -1599,12 +1605,19 @@ class _StreamingBubble extends StatelessWidget {
 ///   per-session 切换 API 时保持原模型，不阻塞发送）。
 /// - 未选择（null）= 跟随宿主默认模型（电脑端 dsh 的“默认模型”设置）。
 class _ModelPicker extends StatelessWidget {
-  const _ModelPicker({required this.state, this.existingSession = false});
+  const _ModelPicker({
+    required this.state,
+    this.existingSession = false,
+    this.sessionModel,
+  });
 
   final AppState state;
 
   /// 已有会话：宿主明确不支持 per-session 模型切换时提示"仅对新会话生效"
   final bool existingSession;
+
+  /// 会话当前实际使用的模型（无全局选择时显示，避免与电脑端不一致）
+  final String? sessionModel;
 
   Future<void> _pick(BuildContext context) async {
     final models = state.models;
@@ -1687,6 +1700,10 @@ class _ModelPicker extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final mid = state.selectedModelId;
+    // 无全局选择时显示会话实际模型（与电脑端一致），而非笼统的"跟随默认"
+    final label = (mid == null || mid.isEmpty)
+        ? (sessionModel ?? AppL10n.i.followDesktopDefault)
+        : mid;
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: () => _pick(context),
@@ -1703,9 +1720,7 @@ class _ModelPicker extends StatelessWidget {
             const SizedBox(width: 4),
             Flexible(
               child: Text(
-                (mid == null || mid.isEmpty)
-                    ? AppL10n.i.followDesktopDefault
-                    : mid,
+                label,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(

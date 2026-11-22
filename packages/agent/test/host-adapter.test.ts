@@ -65,6 +65,50 @@ describe('HostAdapter.capabilities', () => {
   })
 })
 
+describe('HostAdapter.listAllModels（跨 provider 聚合）', () => {
+  it('聚合所有 provider 目录、按 id 去重、补 provider 字段', async () => {
+    const host = new HostAdapter({
+      llm: {
+        listProviders: () => [{ id: 'deepseek-account', name: '账号' }, { id: 'custom-key', name: '自定义' }],
+        listModels: async (p: string) => {
+          if (p === 'deepseek-account') return [{ id: 'deepseek-flash' }, { id: 'shared-model' }]
+          if (p === 'custom-key') return [{ id: 'qwen4-max' }, { id: 'shared-model', provider: 'other' }]
+          return []
+        },
+      },
+    })
+    const models = await host.listAllModels('deepseek-account') as any[]
+    expect(models.map(m => m.id)).toEqual(['deepseek-flash', 'shared-model', 'qwen4-max'])
+    expect(models.find(m => m.id === 'qwen4-max').provider).toBe('custom-key')
+    expect(models.find(m => m.id === 'deepseek-flash').provider).toBe('deepseek-account')
+    // 先注册 provider 优先：shared-model 保留 account 归属
+    expect(models.find(m => m.id === 'shared-model').provider).toBe('deepseek-account')
+  })
+
+  it('单个 provider 失败不影响其余；无 listProviders 时回落默认 provider', async () => {
+    const host = new HostAdapter({
+      llm: {
+        listProviders: () => [{ id: 'broken' }, { id: 'ok' }],
+        listModels: async (p: string) => {
+          if (p === 'broken') throw new Error('no adapter registered')
+          return [{ id: 'm1' }]
+        },
+      },
+    })
+    expect((await host.listAllModels('x') as any[]).map(m => m.id)).toEqual(['m1'])
+    const legacy = new HostAdapter({
+      llm: { listModels: async (p: string) => (p === 'fallback' ? [{ id: 'm2' }] : []) },
+    })
+    expect((await legacy.listAllModels('fallback') as any[]).map(m => m.id)).toEqual(['m2'])
+  })
+
+  it('llm 缺失或目录全空返回空数组', async () => {
+    expect(await new HostAdapter({}).listAllModels('x')).toEqual([])
+    const empty = new HostAdapter({ llm: { listProviders: () => [{ id: 'a' }], listModels: async () => [] } })
+    expect(await empty.listAllModels('x')).toEqual([])
+  })
+})
+
 describe('HostAdapter.hostVersion', () => {
   it('按已知形状探测版本', () => {
     expect(new HostAdapter(fullCtx()).hostVersion).toBe('0.2.1-rc.2')

@@ -101,6 +101,44 @@ export class HostAdapter {
     return a || b
   }
 
+  /**
+   * 聚合所有 provider 路由的模型目录（桌面端选择器即跨 provider 聚合）。
+   * 仅拉默认 provider 会漏掉自定义/API-key 路线的模型。按 id 去重（先注册优先），
+   * 缺失 provider 字段时补所属路由；单个 provider 目录未就绪不影响其余。
+   */
+  async listAllModels(fallbackProvider: string): Promise<unknown[]> {
+    const llm = this.llm
+    if (typeof llm?.listModels !== 'function') return []
+    let providers: string[] = []
+    if (typeof llm.listProviders === 'function') {
+      try {
+        providers = (llm.listProviders() ?? [])
+          .map((p: any) => p?.id)
+          .filter((id: any) => typeof id === 'string' && id)
+      } catch {
+        providers = []
+      }
+    }
+    if (!providers.length) providers = [fallbackProvider]
+    const merged: any[] = []
+    const seen = new Set<string>()
+    for (const provider of providers) {
+      try {
+        const rows = await llm.listModels(provider)
+        if (!Array.isArray(rows)) continue
+        for (const m of rows) {
+          const id = (m as any)?.id
+          if (typeof id !== 'string' || !id || seen.has(id)) continue
+          seen.add(id)
+          merged.push({ ...(m as object), provider: (m as any)?.provider ?? provider })
+        }
+      } catch {
+        // 该 provider 适配器未就绪或目录拉取失败：跳过
+      }
+    }
+    return merged
+  }
+
   capabilities(): HostCapabilities {
     const genericDelete =
       typeof this.sessions?.delete === 'function' || typeof this.agents?.delete === 'function'

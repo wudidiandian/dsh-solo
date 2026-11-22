@@ -164,30 +164,22 @@ export function apply(ctx: Context, config: Config) {
     // 异步加载（/models 拉取），启动早期调用会抛 "no adapter registered"——
     // 重试 + 成功后缓存，避免每次快照都白等。
     let modelsCache: unknown[] | null = null
+    let modelsCacheAt = 0
     const services: HarnessServices = {
     listProjects: () => listProjects(host.workspaceRegistry),
     listModels: async () => {
-      // 快速失败版（2026-10-28）：只试一次，失败/为空立即返回 []，不阻塞快照上报。
-      // 目录就绪由 bootstrap 的轮询负责——拿到非空目录后触发 core.publishSnapshot()
-      // 重报快照，App 端几秒内自动补全模型列表（修复"快照中没有模型列表"）。
-      //
-      // listModels 签名（2026-10-28 实机定位）：llm.listModels(provider) 需要显式
-      // provider 参数，无参调用抛 "no adapter registered for provider \"undefined\""。
-      // provider 取宿主默认模型的 provider，缺省回落账号路。
-      if (modelsCache) return modelsCache
-      const llm = host.llm
-      if (typeof llm?.listModels !== 'function') return []
+      // 跨 provider 聚合（含自定义模型路线）；30s TTL 缓存：后注册的适配器
+      // 最迟在下一次周期快照进入目录。失败/为空时保留旧缓存，不阻塞快照。
+      const now = Date.now()
+      if (modelsCache && now - modelsCacheAt < 30_000) return modelsCache
       const provider = host.agentDefaultModel?.currentSelection?.()?.provider ?? 'deepseek-account'
-      try {
-        const r = await llm.listModels(provider)
-        if (Array.isArray(r) && r.length) {
-          modelsCache = r
-          return r
-        }
-      } catch {
-        // 目录未就绪（账号路 /models 异步加载），由 bootstrap 轮询重试
+      const merged = await host.listAllModels(provider)
+      if (merged.length) {
+        modelsCache = merged
+        modelsCacheAt = now
+        return merged
       }
-      return []
+      return modelsCache ?? []
     },
     listSessions: async () => {
       let list: any[] = []

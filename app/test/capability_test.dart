@@ -8,6 +8,8 @@ import 'package:dsh_solo/relay/relay_client.dart';
 import 'package:dsh_solo/state/app_state.dart';
 import 'package:dsh_solo/ui/session_page.dart';
 
+import 'fake_relay.dart';
+
 class _OfflineState extends AppState {
   @override
   Future<Envelope> fetchHistory(String sessionId, {int? sinceSeqId}) async =>
@@ -69,6 +71,61 @@ void main() {
       expect(state.hostVersion, isNull);
       expect(state.hostCapabilities, isEmpty);
       expect(state.capabilityOff('session.setModel'), false);
+    });
+  });
+
+  group('会话内模型切换', () {
+    test('setSessionModel 发送 session.set_model 并透传响应', () async {
+      final seen = <Map<String, dynamic>>[];
+      final relay = FakeRelay(onConnection: (conn) {
+        conn.onEnvelope = (env) {
+          if (env.type == MsgType.helloMobile) {
+            conn.send(makeEnvelope(MsgType.helloOk, {}));
+          } else if (env.type == MsgType.cmdDispatch &&
+              env.payloadMap['action'] == 'session.set_model') {
+            seen.add(Map<String, dynamic>.from(env.payloadMap['data'] as Map));
+            conn.send(
+              makeEnvelope(MsgType.rpcResponse, {
+                'ok': true,
+                'result': {'sessionId': 's1', 'model': 'qwen4-max'},
+              }, {'reqId': env.reqId}),
+            );
+          } else if (env.type == MsgType.cmdDispatch &&
+              env.payloadMap['action'] == 'device.token.get') {
+            conn.send(
+              makeEnvelope(MsgType.rpcResponse, {
+                'ok': true,
+                'result': {'token': 't', 'relayUrl': 'ws://127.0.0.1:0/ws'},
+              }, {'reqId': env.reqId}),
+            );
+          } else if (env.type == MsgType.cmdDispatch) {
+            conn.send(
+              makeEnvelope(MsgType.rpcResponse, {
+                'ok': true,
+                'result': {},
+              }, {'reqId': env.reqId}),
+            );
+          }
+        };
+      });
+      await relay.start();
+      addTearDown(relay.stop);
+      final state = AppState();
+      state.connect(
+        RelayClient(
+          url: relay.url,
+          deviceToken: 't',
+          allowUnencryptedForTests: true,
+        ),
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 200));
+      final resp = await state.setSessionModel('s1', 'qwen4-max');
+      expect(resp.payloadMap['ok'], true);
+      expect(seen, [
+        {'sessionId': 's1', 'modelId': 'qwen4-max'},
+      ]);
+      state.client?.stop();
+      state.dispose();
     });
   });
 

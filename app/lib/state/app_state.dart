@@ -752,6 +752,7 @@ class AppState extends ChangeNotifier {
     String? sessionId,
     String? modelId,
     String? projectId,
+    bool useGlobalModel = true,
   }) async {
     final c = client;
     if (c == null) throw StateError('relay not connected');
@@ -759,7 +760,8 @@ class AppState extends ChangeNotifier {
     if (pendingAttachments.any((a) => a.progress != null)) {
       throw StateError(AppL10n.i.attachmentStillUploading);
     }
-    final mid = modelId ?? selectedModelId;
+    // 全局选择只作为新会话默认；已有会话的模型由显式切换决定，不随消息隐式改
+    final mid = modelId ?? (useGlobalModel ? selectedModelId : null);
     final atts = [for (final a in pendingAttachments) a.toJson()];
     return c
         .rpc(CmdAction.sessionPrompt, {
@@ -946,6 +948,17 @@ class AppState extends ChangeNotifier {
     if (c == null) throw StateError('relay not connected');
     await _ensureDesktop(c);
     return c.rpc(CmdAction.sessionInterrupt, {'sessionId': sessionId});
+  }
+
+  /// 会话内切换模型（宿主 sessionController.selectModel，与桌面端同路径）
+  Future<Envelope> setSessionModel(String sessionId, String modelId) async {
+    final c = client;
+    if (c == null) throw StateError('relay not connected');
+    await _ensureDesktop(c);
+    return c.rpc(CmdAction.sessionSetModel, {
+      'sessionId': sessionId,
+      'modelId': modelId,
+    });
   }
 
   /// 清空某会话的事件缺口标记

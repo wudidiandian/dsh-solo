@@ -159,6 +159,7 @@ export type CommandAction =
   | 'session.delete'
   | 'session.history'
   | 'session.interrupt'
+  | 'session.set_model'
   | 'device.token.get'
   | 'device.token.reset'
   | 'device.register'
@@ -252,6 +253,12 @@ export interface SessionInterruptData {
   sessionId: string
 }
 
+/** session.set_model：会话内切换模型（宿主 sessionController.selectModel，与桌面端同路径） */
+export interface SessionSetModelData {
+  sessionId: string
+  modelId: string
+}
+
 export interface SessionHistoryData {
   sessionId: string
   /** Only return events with seqId greater than this (incremental sync); omit for full history */
@@ -275,7 +282,9 @@ export interface CmdDispatchPayload<A extends CommandAction = CommandAction> {
             ? SessionDeleteData
             : A extends 'session.interrupt'
               ? SessionInterruptData
-              : A extends 'session.history'
+              : A extends 'session.set_model'
+                ? SessionSetModelData
+                : A extends 'session.history'
                 ? SessionHistoryData
                 : A extends 'device.token.get' | 'device.token.reset' | 'device.list'
                   ? Record<string, never>

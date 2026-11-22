@@ -41,6 +41,7 @@ class CmdAction {
   static const sessionDelete = 'session.delete';
   static const sessionHistory = 'session.history';
   static const sessionInterrupt = 'session.interrupt';
+  static const sessionSetModel = 'session.set_model';
   static const deviceRegister = 'device.register';
   static const deviceList = 'device.list';
   static const deviceRevoke = 'device.revoke';

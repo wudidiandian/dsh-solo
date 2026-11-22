@@ -111,6 +111,28 @@ function makeServices() {
 // ---------------------------------------------------------------------------
 
 describe('AgentCore', () => {
+  it('session.set_model 走 services.setSessionModel；服务缺省时返回错误', async () => {
+    const relay = new MockRelay()
+    const { services } = makeServices()
+    const calls: Array<[string, string]> = []
+    services.setSessionModel = async (id, model) => { calls.push([id, model]) }
+    const core = new AgentCore(relay, { services })
+    core.start()
+    relay.emit('command', makeEnvelope('cmd.dispatch', { action: 'session.set_model', data: { sessionId: 's1', modelId: 'qwen4-max' } }, { reqId: 'm1' }))
+    await vi.waitFor(() => expect(relay.ofType('rpc.response').length).toBe(1))
+    expect(calls).toEqual([['s1', 'qwen4-max']])
+    expect((relay.ofType('rpc.response')[0].payload as { ok: boolean }).ok).toBe(true)
+    core.stop()
+
+    const relay2 = new MockRelay()
+    const core2 = new AgentCore(relay2, { services: makeServices().services })
+    core2.start()
+    relay2.emit('command', makeEnvelope('cmd.dispatch', { action: 'session.set_model', data: { sessionId: 's1', modelId: 'x' } }, { reqId: 'm2' }))
+    await vi.waitFor(() => expect(relay2.ofType('rpc.response').length).toBe(1))
+    expect((relay2.ofType('rpc.response')[0].payload as { ok: boolean }).ok).toBe(false)
+    core2.stop()
+  })
+
   it('connected 后上报 HostSnapshot（模型+会话+目录树）', async () => {
     const relay = new MockRelay()
     const { services } = makeServices()

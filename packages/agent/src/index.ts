@@ -159,6 +159,21 @@ export function apply(ctx: Context, config: Config) {
     const handles = new Map<string, any>()
     // 会话标题缓存（session/title 事件 last-wins，供快照展示）
     const titles = new Map<string, string>()
+    // 会话模型缓存（model/selection 事件 last-wins；快照展示真实在用模型）
+    const modelOverrides = new Map<string, string>()
+    const sessionModelOf = (a: any): string | undefined => {
+      const id = a?.session?.header?.id ?? a?.id
+      const ov = modelOverrides.get(id)
+      if (ov) return ov
+      try {
+        const st = host.sessionProjections?.stateOf?.(a?.session, 'modelSelection')
+        const m = st?.pending?.model ?? st?.lastUsed?.model
+        if (typeof m === 'string' && m) return m
+      } catch {
+        // 投影服务缺失时回落 agent.options
+      }
+      return a?.options?.model
+    }
 
     // 模型目录（2026-10-27 实机核实）：ctx.llm.listModels 存在，但账号路目录为
     // 异步加载（/models 拉取），启动早期调用会抛 "no adapter registered"——
@@ -186,7 +201,7 @@ export function apply(ctx: Context, config: Config) {
       if (typeof host.agents?.list === 'function') {
         list = host.agents
           .list()
-          .map((a: any) => mapAgentSummary(a, titles, handles))
+          .map((a: any) => mapAgentSummary(a, titles, handles, sessionModelOf))
           .filter(Boolean)
       } else if (typeof host.sessions?.list === 'function') {
         list = host.sessions
@@ -264,7 +279,7 @@ export function apply(ctx: Context, config: Config) {
             }
           : {}),
       })
-      const session = agentToSession(handle.agent)
+      const session = agentToSession(handle.agent, host, services.listModels)
       // 活 agent 探测动态能力（setModel / cancel）；变化时重报快照让 App 点亮对应 UI
       if (host.noteAgentCapabilities(handle.agent)) void core?.publishSnapshot()
       try {
@@ -283,7 +298,7 @@ export function apply(ctx: Context, config: Config) {
     getSession: async (id) => {
       const agent = host.agents?.get?.(id)
       if (agent && host.noteAgentCapabilities(agent)) void core?.publishSnapshot()
-      return agent ? agentToSession(agent) : null
+      return agent ? agentToSession(agent, host, services.listModels) : null
     },
     interruptSession: async (id) => {
       const agent = host.agents?.get?.(id)
@@ -291,6 +306,16 @@ export function apply(ctx: Context, config: Config) {
       if (typeof agent.cancel !== 'function') throw new Error('host agent.cancel not available')
       // kind:'user' = 用户主动停止：清空排队输入并中止当前回合（宿主语义）
       agent.cancel({ kind: 'user' })
+    },
+    setSessionModel: async (id, modelId) => {
+      const ctrl = host.sessionController
+      if (typeof ctrl?.selectModel !== 'function') throw new Error('host sessionController.selectModel not available')
+      const models = (await services.listModels()) as any[]
+      const provider = models.find((m) => m?.id === modelId)?.provider
+        ?? host.agentDefaultModel?.currentSelection?.()?.provider ?? 'deepseek-account'
+      // 与桌面端选择器同一路径：校验模型、写 model/selection 事件、更新装配缓存
+      await ctrl.selectModel({ sessionId: id, provider, model: modelId })
+      void core?.publishSnapshot()
     },
     renameSession: async (id, title) => {
       const session = host.agents?.get?.(id)?.session ?? host.sessions?.get?.(id)
@@ -332,9 +357,13 @@ export function apply(ctx: Context, config: Config) {
         const normalized = normalizeSessionEventArgs(args)
         if (!normalized) return
         const [sid, ev] = normalized
-        const data = ev.data as { title?: unknown } | undefined
+        const data = ev.data as { title?: unknown; model?: unknown } | undefined
         if (ev.kind === 'session/title' && typeof data?.title === 'string') {
           titles.set(sid, data.title)
+        }
+        if (ev.kind === 'model/selection' && typeof data?.model === 'string') {
+          modelOverrides.set(sid, data.model)
+          void core?.publishSnapshot()
         }
         cb(sid, ev)
       })
@@ -465,17 +494,22 @@ export function apply(ctx: Context, config: Config) {
 /** 把宿主 Agent 映射成 AgentCore 需要的会话句柄 */
 let setModelUnsupportedWarned = false
 
-function agentToSession(agent: any): import('./core.js').AgentSessionLike {
+function agentToSession(agent: any, host: HostAdapter, listModels: () => Promise<unknown[]>): import('./core.js').AgentSessionLike {
   const id = agent?.session?.header?.id ?? agent?.id
   if (!id) throw new Error('host agent has no session id')
   return {
     id,
     model: agent?.options?.model,
     async setModel(modelId: string): Promise<void> {
-      // 尽力而为（2026-10-28）：宿主暂无已知的 per-session 模型切换 API。
-      // 新会话路径（createSession 的 agentOptions）已支持任意模型；已有会话
-      // 找不到宿主切换入口时不抛错——否则 App 对已有会话选模型会让整条
-      // prompt 失败。仅提示一次“该会话保持原模型”。
+      // 官方路径：sessionController.selectModel（与桌面端选择器一致，写 model/selection 事件）
+      const ctrl = host.sessionController
+      if (typeof ctrl?.selectModel === 'function') {
+        const models = (await listModels()) as any[]
+        const provider = models.find((m) => m?.id === modelId)?.provider
+          ?? host.agentDefaultModel?.currentSelection?.()?.provider ?? 'deepseek-account'
+        await ctrl.selectModel({ sessionId: id, provider, model: modelId })
+        return
+      }
       if (typeof agent?.setModel === 'function') {
         await agent.setModel(modelId)
         return
@@ -501,13 +535,13 @@ function agentToSession(agent: any): import('./core.js').AgentSessionLike {
 }
 
 /** 活代理 → 快照会话条目 */
-function mapAgentSummary(a: any, titles: Map<string, string>, handles: Map<string, any>) {
+function mapAgentSummary(a: any, titles: Map<string, string>, handles: Map<string, any>, modelOf: (a: any) => string | undefined) {
   const id = a?.session?.header?.id ?? a?.id
   if (!id) return null
   return {
     id,
     title: titles.get(id),
-    model: a?.options?.model,
+    model: modelOf(a),
     cwd: a?.session?.header?.cwd,
     updatedAt: a?.session?.header?.createdAt,
     // deleteSession 的能力对象只在本插件手里：标记 App 端可否删除（驱动 UI 区分来源）

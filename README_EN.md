@@ -2,11 +2,11 @@
 
 [![npm version](https://img.shields.io/npm/v/dsh-solo-agent)](https://www.npmjs.com/package/dsh-solo-agent) [![GitHub Release](https://img.shields.io/github/v/release/wudidiandian/dsh-solo)](https://github.com/wudidiandian/dsh-solo/releases) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> **Version 0.1.8 is now stable**, fixing the phone model picker missing custom-provider models (catalogs now aggregate across all providers) and showing each session's actual model in the session page; includes the 0.1.7 feature set: device management with per-device revocation, multiple workstations, background notifications, stopping desktop tasks, title sync and auto-refreshing pairing QR. [Release packages](https://github.com/wudidiandian/dsh-solo/releases/tag/v0.1.8) · [Download Android APK](https://github.com/wudidiandian/dsh-solo/releases/latest/download/dsh-solo.apk). Update both the desktop plugin and mobile app.
+> **Version 0.1.9 is now stable**, with real in-session model switching (same official path as the desktop, including custom models) and model display consistent with the desktop; includes 0.1.8 cross-provider model catalogs and the 0.1.7 feature set: device management with per-device revocation, multiple workstations, background notifications, stopping desktop tasks, title sync and auto-refreshing pairing QR. [Release packages](https://github.com/wudidiandian/dsh-solo/releases/tag/v0.1.9) · [Download Android APK](https://github.com/wudidiandian/dsh-solo/releases/latest/download/dsh-solo.apk). Update both the desktop plugin and mobile app.
 
-> **Upgrading (0.1.7 / 0.1.8)**: device management, multiple workstations, background notifications and stopping tasks from the phone require **both the desktop plugin and the app at 0.1.7 or newer**; updating only one side keeps basic features working but leaves the new ones unavailable. Pairing data is retained and re-scanning is usually unnecessary; a phone revoked on the desktop pairing page must re-scan the QR to pair again. The relay protocol is unchanged in this release, so self-hosted servers need no redeployment.
+> **Upgrading (0.1.7 – 0.1.9)**: device management, multiple workstations, background notifications and stopping tasks from the phone require **both the desktop plugin and the app at 0.1.7 or newer**; updating only one side keeps basic features working but leaves the new ones unavailable. Pairing data is retained and re-scanning is usually unnecessary; a phone revoked on the desktop pairing page must re-scan the QR to pair again. The relay protocol is unchanged in this release, so self-hosted servers need no redeployment.
 
-| Component | Minimum version with E2EE | Must update for 0.1.8 |
+| Component | Minimum version with E2EE | Must update for 0.1.9 |
 | --- | --- | --- |
 | Desktop plugin `dsh-solo-agent` | 0.1.5 | Yes (new features need the plugin) |
 | Mobile app | 0.1.5 | Yes (new features need the app) |
@@ -36,7 +36,7 @@ dsh-solo-agent
 
 Select **Enable now**. If **Phone pairing** does not appear in the sidebar, fully quit the desktop app through its application menu and reopen it; closing the window may only hide it to the tray.
 
-Without a version suffix, installation uses npm's `latest` stable tag. To pin a version, enter `dsh-solo-agent@0.1.8`. If the package cannot be found, switch to the **official npm registry** while mirrors catch up. Existing installations need an update or reinstall as prompted by the host; pairing data in your home directory's `.dsh-solo` can normally be retained.
+Without a version suffix, installation uses npm's `latest` stable tag. To pin a version, enter `dsh-solo-agent@0.1.9`. If the package cannot be found, switch to the **official npm registry** while mirrors catch up. Existing installations need an update or reinstall as prompted by the host; pairing data in your home directory's `.dsh-solo` can normally be retained.
 
 <details>
 <summary>Desktop plugin installation screenshots</summary>
@@ -85,9 +85,9 @@ The QR code in this screenshot is for demonstration. Scan the code on your own c
 
 ### 4. Usage demo
 
-[▶ Watch the full app walkthrough (about 2 minutes 18 seconds)](docs/videos/app-usage.mp4)
+[▶ Watch the full app walkthrough (about 4 minutes 13 seconds)](docs/videos/app-usage.mp4)
 
-Click the preview to open the video. It demonstrates connecting the phone, selecting a desktop project, sending tasks, listing files with tools, switching models, and renaming or deleting sessions. The recording uses the Chinese interface.
+Click the preview to open the video. It demonstrates QR pairing, selecting a desktop project, sending tasks with streaming replies, stopping tasks, approval cards, background notifications, workstation switching and desktop device revocation. The recording uses the Chinese interface.
 
 <a href="docs/videos/app-usage.mp4"><img src="docs/screenshots/app-usage-preview.jpg" alt="Watch the DSH-SOLO mobile app walkthrough" width="260"></a>
 
@@ -106,6 +106,8 @@ The home screen gear opens **Device connection, Help, Privacy and permissions, a
 - **Manage workstations**: rename or delete a pairing; a deleted computer must be re-scanned to connect again.
 - Re-scanning the **same computer** never adds a duplicate: the existing pairing is updated and switched to.
 
+<img src="docs/screenshots/app-many-pc.jpg" alt="Workstation menu on the app home page with two computers and add/manage entries" width="300">
+
 ### 6. Device management and per-device revocation
 
 - The desktop **Phone pairing** panel (or the fallback browser page) lists paired phones with name and last-seen time.
@@ -120,6 +122,8 @@ The home screen gear opens **Device connection, Help, Privacy and permissions, a
 - While the app is in the background, completed tasks, pending approvals and stopped tasks raise system notifications; tapping opens the session. No push after the process is killed (offline push is on the roadmap).
 - While a session is running, the send button turns into a red **Stop**: tapping interrupts the current desktop turn and the session shows "Task stopped".
 - Sessions created or renamed on the desktop keep their titles in the app's session list automatically.
+
+<img src="docs/screenshots/app-stop.jpg" alt="Red stop button in a running session" width="300"> <img src="docs/screenshots/app-mesg.jpg" alt="Notification alerts switch in settings" width="300">
 
 ### Alternative: install a plugin archive
 
@@ -146,7 +150,7 @@ Discovery in the third-party `dsh-market` requires separate catalog inclusion; n
 
 ## FAQ
 
-**Plugin not found or an old version at install time?** China npm mirrors lag: switch the install source to the official npm registry, or pin `dsh-solo-agent@0.1.8`. The third-party dsh-market refreshes versions daily; only description changes need a catalog PR.
+**Plugin not found or an old version at install time?** China npm mirrors lag: switch the install source to the official npm registry, or pin `dsh-solo-agent@0.1.9`. The third-party dsh-market refreshes versions daily; only description changes need a catalog PR.
 
 **No "Phone pairing" entry in the desktop sidebar?** Closing the window may hide it to the tray: fully quit via App → Exit and reopen, and confirm the plugin switch is enabled.
 
@@ -158,7 +162,7 @@ Discovery in the third-party `dsh-market` requires separate catalog inclusion; n
 
 **Why is the APK 70+ MB?** The release package bundles native libraries for arm64 / arm32 / x86_64; installation extracts only your device's architecture. arm64-only preview builds are about 26 MB.
 
-**Do I need to re-pair after upgrading?** 0.1.6 → 0.1.8 usually not (pairing data is retained), except revoked phones; 0.1.4 → 0.1.5+ requires updating all three components and re-scanning (E2EE is incompatible with old clients).
+**Do I need to re-pair after upgrading?** 0.1.6 → 0.1.9 usually not (pairing data is retained), except revoked phones; 0.1.4 → 0.1.5+ requires updating all three components and re-scanning (E2EE is incompatible with old clients).
 
 ## Current security and privacy
 

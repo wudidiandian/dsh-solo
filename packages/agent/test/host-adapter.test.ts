@@ -32,6 +32,14 @@ describe('HostAdapter.capabilities', () => {
     })
   })
 
+  it('sessionController.selectModel 存在即支持会话内模型切换（ctx.get 免 inject 读取）', () => {
+    const host = new HostAdapter({
+      get: (name: string) =>
+        name === 'sessionController' ? { selectModel: async () => ({}) } : undefined,
+    })
+    expect(host.capabilities()['session.setModel']).toBe(true)
+  })
+
   it('空宿主：全部降级为 false，不抛错', () => {
     const host = new HostAdapter({})
     const caps = host.capabilities()

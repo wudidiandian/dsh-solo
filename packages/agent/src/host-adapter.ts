@@ -57,6 +57,16 @@ export class HostAdapter {
     return this.ctx?.sessionQuery
   }
 
+  /** 会话控制器（桌面端模型切换的官方入口 selectModel 所在服务）。
+   *  可选服务：cordis 禁止未 inject 的属性访问，用 ctx.get 免声明读取。 */
+  get sessionController(): any {
+    return this.ctx?.get?.('sessionController')
+  }
+
+  get sessionProjections(): any {
+    return this.ctx?.get?.('sessionProjections')
+  }
+
   get connection(): any {
     return this.ctx?.connection
   }
@@ -144,7 +154,8 @@ export class HostAdapter {
       typeof this.sessions?.delete === 'function' || typeof this.agents?.delete === 'function'
     return {
       'session.create': typeof this.agents?.create === 'function',
-      'session.setModel': this.setModelAvailable,
+      // 桌面同路径：sessionController.selectModel 存在即支持会话内切换
+      'session.setModel': typeof this.sessionController?.selectModel === 'function' || this.setModelAvailable,
       'session.interrupt': this.interruptAvailable,
       'session.delete': genericDelete ? 'all' : 'own-only',
       'session.rename': typeof this.sessions?.get === 'function' || typeof this.agents?.get === 'function',

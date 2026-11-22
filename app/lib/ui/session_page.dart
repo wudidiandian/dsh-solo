@@ -248,6 +248,7 @@ class _SessionPageState extends State<SessionPage> {
         text,
         sessionId: _activeSessionId,
         projectId: _activeSessionId == null ? _selectedProject?.id : null,
+        useGlobalModel: _activeSessionId == null,
       );
       if (!mounted) return;
       final p = resp.payloadMap;
@@ -930,6 +931,7 @@ class _SessionPageState extends State<SessionPage> {
                       _ModelPicker(
                         state: state,
                         existingSession: _activeSessionId != null,
+                        sessionId: _activeSessionId,
                         sessionModel: _activeSessionId == null
                             ? null
                             : state.sessions
@@ -1608,6 +1610,7 @@ class _ModelPicker extends StatelessWidget {
   const _ModelPicker({
     required this.state,
     this.existingSession = false,
+    this.sessionId,
     this.sessionModel,
   });
 
@@ -1616,11 +1619,16 @@ class _ModelPicker extends StatelessWidget {
   /// 已有会话：宿主明确不支持 per-session 模型切换时提示"仅对新会话生效"
   final bool existingSession;
 
+  /// 当前会话 id：选择模型后立即对该会话生效（宿主支持时）
+  final String? sessionId;
+
   /// 会话当前实际使用的模型（无全局选择时显示，避免与电脑端不一致）
   final String? sessionModel;
 
   Future<void> _pick(BuildContext context) async {
     final models = state.models;
+    // 已有会话以会话实际模型为当前值；新会话以全局选择为当前值
+    final current = existingSession ? sessionModel : state.selectedModelId;
     final selected = await showModalBottomSheet<String>(
       context: context,
       builder: (ctx) => SafeArea(
@@ -1643,19 +1651,20 @@ class _ModelPicker extends StatelessWidget {
                   style: const TextStyle(color: Colors.grey, fontSize: 12),
                 ),
               ),
-            // 「跟随默认」：清空 App 侧选择，回落宿主默认模型
-            ListTile(
-              dense: true,
-              leading: const Icon(Icons.auto_awesome, size: 18),
-              title: Text(
-                AppL10n.i.followDesktopDefault,
-                style: const TextStyle(fontSize: 14),
+            // 「跟随默认」仅对新会话有意义（已有会话总有一个在用模型）
+            if (!existingSession)
+              ListTile(
+                dense: true,
+                leading: const Icon(Icons.auto_awesome, size: 18),
+                title: Text(
+                  AppL10n.i.followDesktopDefault,
+                  style: const TextStyle(fontSize: 14),
+                ),
+                trailing: (current == null)
+                    ? const Icon(Icons.check, size: 18)
+                    : null,
+                onTap: () => Navigator.pop(ctx, ''),
               ),
-              trailing: (state.selectedModelId == null)
-                  ? const Icon(Icons.check, size: 18)
-                  : null,
-              onTap: () => Navigator.pop(ctx, ''),
-            ),
             if (models.isEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(
@@ -1682,8 +1691,7 @@ class _ModelPicker extends StatelessWidget {
                         )
                       : null,
                   trailing:
-                      (state.selectedModelId != null &&
-                          state.selectedModelId == m['id'].toString())
+                      (current != null && current == m['id'].toString())
                       ? const Icon(Icons.check, size: 18)
                       : null,
                   onTap: () => Navigator.pop(ctx, m['id']?.toString()),
@@ -1694,16 +1702,46 @@ class _ModelPicker extends StatelessWidget {
       ),
     );
     if (selected == null) return; // 用户取消
-    state.setSelectedModel(selected); // '' → null（跟随默认）
+    // 新会话：全局默认选择；已有会话：只对该会话显式切换，不动全局默认
+    if (sessionId == null) {
+      state.setSelectedModel(selected); // '' → null（跟随默认）
+      return;
+    }
+    final sid = sessionId;
+    if (sid != null &&
+        selected.isNotEmpty &&
+        !state.capabilityOff('session.setModel')) {
+      try {
+        final resp = await state.setSessionModel(sid, selected);
+        final p = resp.payloadMap;
+        if (p['ok'] != true && context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(
+                AppL10n.i.sendFailed(p['error'] ?? AppL10n.i.unknownError),
+              ),
+            ),
+          );
+        }
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(AppL10n.i.sendError(e))));
+        }
+      }
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     final mid = state.selectedModelId;
-    // 无全局选择时显示会话实际模型（与电脑端一致），而非笼统的"跟随默认"
-    final label = (mid == null || mid.isEmpty)
+    // 已有会话显示会话实际模型；新会话显示全局选择；均无则"跟随默认"
+    final label = existingSession
         ? (sessionModel ?? AppL10n.i.followDesktopDefault)
-        : mid;
+        : ((mid == null || mid.isEmpty)
+              ? AppL10n.i.followDesktopDefault
+              : mid);
     return InkWell(
       borderRadius: BorderRadius.circular(8),
       onTap: () => _pick(context),

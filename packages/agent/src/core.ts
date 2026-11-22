@@ -18,6 +18,7 @@ import {
   type SessionInterruptData,
   type SessionPromptData,
   type SessionRenameData,
+  type SessionSetModelData,
   makeEnvelope,
 } from '@dsh-solo/protocol'
 import type { InteractionBroker } from './interactions.js'
@@ -57,6 +58,8 @@ export interface HarnessServices {
   deleteSession(id: string): Promise<void>
   /** 中断会话当前回合（宿主 agent.cancel；宿主不支持时缺省） */
   interruptSession?(id: string): Promise<void>
+  /** 会话内切换模型（宿主 sessionController.selectModel；不支持时缺省） */
+  setSessionModel?(id: string, modelId: string): Promise<void>
   /** 订阅会话事件流，返回取消订阅函数 */
   onSessionEvent(cb: (sessionId: string, event: SessionEvent) => void): () => void
   /** 注册高危工具审批拦截器：resolve(true)=允许执行 */
@@ -605,6 +608,13 @@ export class AgentCore {
           const data = payload.data as SessionInterruptData
           await this.opts.services.interruptSession(data.sessionId)
           respond(true, { sessionId: data.sessionId })
+          break
+        }
+        case 'session.set_model': {
+          if (!this.opts.services.setSessionModel) throw new Error('Model switching requires a newer desktop plugin')
+          const data = payload.data as SessionSetModelData
+          await this.opts.services.setSessionModel(data.sessionId, data.modelId)
+          respond(true, { sessionId: data.sessionId, model: data.modelId })
           break
         }
         case 'session.history': {

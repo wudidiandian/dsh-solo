@@ -14,7 +14,7 @@ class ProjectState extends AppState {
   Future<Envelope> fetchHistory(String sessionId, {int? sinceSeqId}) async =>
     makeEnvelope(MsgType.rpcResponse, {'ok': true, 'result': {'events': []}});
   @override
-  Future<Envelope> sendPrompt(String text, {String? sessionId, String? modelId, String? projectId}) async {
+  Future<Envelope> sendPrompt(String text, {String? sessionId, String? modelId, String? projectId, bool useGlobalModel = true}) async {
     sent.add({'sessionId': sessionId, 'projectId': projectId});
     return makeEnvelope(MsgType.rpcResponse, {'ok': true, 'result': {'sessionId': sessionId ?? 'new-session'}});
   }

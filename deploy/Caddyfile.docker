@@ -3,7 +3,15 @@
   handle @relay {
     reverse_proxy relay:8787
   }
+  # 其余路径：伺服可选的静态备案页（deploy/site/，已挂载到 /srv/site）。
+  # 目录为空时 file_server 返回 404，与旧行为一致，不影响未备案的自建用户。
   handle {
-    respond 404
+    root * /srv/site
+    header Cache-Control "no-cache"
+    file_server
   }
 }
+
+# 可选的额外站点块（如 www 备案页）：把 *.caddy 放进 deploy/caddy-extra/。
+# 空 glob 不报错；目录为空时行为与之前完全一致。
+import /etc/caddy/extra/*.caddy

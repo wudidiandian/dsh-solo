@@ -14,13 +14,25 @@
 
 <你的域名> {
 	# WebSocket 接入：透传升级握手，附真实 IP
-	reverse_proxy /ws 127.0.0.1:8787 {
-		header_up X-Real-IP {remote_host}
+	handle /ws {
+		reverse_proxy 127.0.0.1:8787 {
+			header_up X-Real-IP {remote_host}
+		}
 	}
 
 	# 健康检查
-	reverse_proxy /healthz 127.0.0.1:8787
+	handle /healthz {
+		reverse_proxy 127.0.0.1:8787
+	}
 
-	# relay 只有两个端点，其余路径一律拒绝
-	abort
+	# 其余路径：伺服可选的静态备案页（目录为空时返回 404，不影响 relay）
+	handle {
+		root * /srv/dsh-solo-site
+		header Cache-Control "no-cache"
+		file_server
+	}
 }
+
+# 可选的额外站点块（如 www 备案页）：把 *.caddy 放进 /etc/caddy/extra/。
+# 空 glob 不报错；目录为空时行为与之前完全一致。
+import /etc/caddy/extra/*.caddy

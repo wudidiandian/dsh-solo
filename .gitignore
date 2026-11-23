@@ -50,5 +50,9 @@ private-docs/
 # Locally compiled relay executable
 deploy/relay-linux-*
 
+# 备案静态页与私有 Caddy 站点块（含真实备案号/域名，不入库；需手动上传到服务器）
+deploy/site/
+deploy/caddy-extra/
+
 # E2EE pairing credentials (never commit)
 **/pairing-key.json

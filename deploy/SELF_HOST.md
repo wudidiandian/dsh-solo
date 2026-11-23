@@ -126,6 +126,17 @@ Tailscale 模式下**没有任何服务器部署**，适合对隐私要求极高
 
 `deviceToken` 首次启动自动生成并持久化到 `<workspaceRoots[0]>/.dsh-solo/device-token`；电脑端配对页（`http://127.0.0.1:8790`）扫码即可把地址与令牌一键带到 App。
 
+## 可选：域名备案静态页
+
+域名在中国大陆完成 ICP 备案后，接入商会不定期核验「网站可访问、内容与备案一致」；根路径长期 404/拒绝连接可能被判定为空壳网站。可以让 Caddy 在根路径伺服一个静态页（`/ws`、`/healthz` 转发不受影响，App 无感知）：
+
+1. 创建 `deploy/site/index.html`（该目录已 gitignore：页面含真实备案号，不入库，需自行上传到服务器）。页面标题与备案「服务名称」一致，页脚展示 ICP 备案号并链接 `beian.miit.gov.cn`；公安备案通过后再补公安备案号并链接 `beian.mps.gov.cn`。
+2. `docker-compose.yml` 已把 `./site` 挂载到 Caddy 的 `/srv/site`，根路径由 `file_server` 伺服；目录为空时返回 404，与旧行为一致，不需要备案页的自建用户不受影响。
+3. 若备案「网站首页」是 www 子域名：给 www 加一条与主域名相同的 DNS A 记录，再创建 `deploy/caddy-extra/www.caddy`（同样已 gitignore）写入 www 站点块。Caddyfile 末尾的 `import /etc/caddy/extra/*.caddy` 会自动加载，空目录不报错。Caddy 自动为 www 申请证书。
+4. 不要把主域名重定向到 www：App 的 WebSocket 升级请求经不起 301。
+
+裸机 Caddy（非 Docker）同理：站点目录放 `/srv/dsh-solo-site`，额外站点块放 `/etc/caddy/extra/`，模板见 `deploy/Caddyfile`。
+
 ## 常见问题
 
 - **`hello.error` / 连不上**：两端 deviceToken 必须一致；`hello.error` 后客户端停止重连，检查 token 是否配对、是否角色冲突（同一 token 不允许两个 agent）

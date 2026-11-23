@@ -52,6 +52,10 @@ services:
       - "443:443"
     volumes:
       - ./Caddyfile.docker:/etc/caddy/Caddyfile:ro
+      # 可选静态备案页与额外站点块（两目录均已 gitignore；缺失时 Docker 建空目录，
+      # 首页返回 404、import 空 glob 不报错，行为与旧版一致）
+      - ./site:/srv/site:ro
+      - ./caddy-extra:/etc/caddy/extra:ro
       - caddy_data:/data
       - caddy_config:/config
 

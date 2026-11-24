@@ -9,7 +9,9 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-const _promptKey = 'dsh_solo_notify_prompt_v1';
+import '../config/secure_keys.dart';
+
+const _promptKey = notifyPromptStorageKey;
 
 class NotificationService {
   NotificationService._();

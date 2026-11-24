@@ -719,6 +719,46 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  Future<void>? _resumeTask;
+
+  /// App 回到前台：验证链路是否仍活着，死了就立即重建，然后补发差量事件。
+  /// iOS 切后台约 30s 后进程被冻结、WebSocket 必断；Android 锁屏/切网也可能
+  /// 留下"看似在线实际已死"的半开连接，故统一用一次轻量 RPC 探测。
+  Future<void> onAppResumed() {
+    appInBackground = false;
+    notifyListeners();
+    return _resumeTask ??= _resume().whenComplete(() => _resumeTask = null);
+  }
+
+  Future<void> _resume() async {
+    final c = client;
+    // fatal = 鉴权失败，需要重新扫码，自动重连无意义
+    if (c == null || c.status == RelayStatus.fatal) return;
+    final epoch = _connectionEpoch;
+    if (!c.isOpen) {
+      c.reconnectNow();
+    } else {
+      try {
+        await c.rpc(
+          'device.token.get',
+          {},
+          timeout: const Duration(seconds: 5),
+        );
+      } catch (_) {
+        if (!identical(client, c) || epoch != _connectionEpoch) return;
+        c.reconnectNow();
+      }
+    }
+    try {
+      await c.ensureOpen(timeout: const Duration(seconds: 12));
+    } catch (_) {
+      return;
+    }
+    if (!identical(client, c) || !c.isOpen) return;
+    await _checkDesktop(c);
+    onReconnected();
+  }
+
   /// 发送 prompt（sessionId 为空则由 agent 新建会话；modelId 缺省用
   /// selectedModelId，再缺省由 agent 侧回落宿主默认模型）。
   /// 待发送附件（pendingAttachments）随消息携带，发送成功后清空。

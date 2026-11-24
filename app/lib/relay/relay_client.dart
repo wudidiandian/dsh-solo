@@ -111,6 +111,29 @@ class RelayClient {
     _setStatus(RelayStatus.idle, null);
   }
 
+  /// 立即重建连接（App 回前台 / 网络切换后调用）。
+  /// iOS 挂起会冻结进程，恢复后旧 socket 往往已死或半开；这里取消退避等待、
+  /// 关闭旧连接并马上发起新握手，而不是等指数退避定时器。
+  void reconnectNow() {
+    if (!_started) {
+      start();
+      return;
+    }
+    _generation++;
+    _retry?.cancel();
+    _handshakeTimer?.cancel();
+    _attempt = 0;
+    _secure = null;
+    _encryptionReady = false;
+    _sub?.cancel();
+    try {
+      _channel?.sink.close();
+    } catch (_) {}
+    _channel = null;
+    _failAllWaiters('reconnecting');
+    _connect();
+  }
+
   /// 发送一个信封（仅在 open 状态下有意义）
   void send(Envelope env) {
     if (allowUnencryptedForTests && _secure == null) {

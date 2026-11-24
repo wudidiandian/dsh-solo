@@ -11,9 +11,10 @@ import 'app_config.dart';
 import 'config_store_io.dart'
     if (dart.library.html) 'config_store_web.dart'
     as legacy;
+import 'secure_keys.dart';
 
-const _key = 'dsh_solo_workstations_v1';
-const _legacyKey = 'dsh_solo_pairing_v2';
+const _key = workstationsStorageKey;
+const _legacyKey = legacyPairingStorageKey;
 const _storage = FlutterSecureStorage();
 
 class WorkstationEntry {
@@ -61,7 +62,7 @@ class Workstations {
 String newStationId() =>
     'ws-${List.generate(8, (_) => Random.secure().nextInt(256).toRadixString(16).padLeft(2, '0')).join()}';
 
-const _deviceIdKey = 'dsh_solo_device_id_v1';
+const _deviceIdKey = deviceIdStorageKey;
 final _deviceIdPattern = RegExp(r'^[0-9a-f]{32}$');
 
 String newDeviceId() => List.generate(

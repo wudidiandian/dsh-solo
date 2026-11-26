@@ -29,8 +29,10 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
-	<key>ITSAppUsesNonExemptEncryption</key>
-	<true/>
+	<!-- 出口合规不在 plist 声明：ITSAppUsesNonExemptEncryption=true 需配
+	     ITSEncryptionExportComplianceCode（Apple 审批后发放），缺码会导致
+	     Upload 报 Invalid Export Compliance Code。改为上传后在 App Store
+	     Connect 的 TestFlight 合规问卷中如实申报加密用途。 -->
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>

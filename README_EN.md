@@ -16,7 +16,7 @@ Clients 0.1.4 and older are incompatible with the E2EE trio; crossing 0.1.5 requ
 
 [中文](README.md) | **English**
 
-Use DeepSeek Harness on your computer from an Android phone: follow sessions, send tasks, select models, transfer attachments and respond to approvals.
+Use DeepSeek Harness on your computer from your phone: follow sessions, send tasks, select models, transfer attachments and respond to approvals.
 
 **Contents**: [Install](#install) · [Workstations](#5-manage-multiple-computers-workstations) · [Device management](#6-device-management-and-per-device-revocation) · [Notifications & stop](#7-background-notifications-and-stopping-tasks) · [Features](#features) · [FAQ](#faq) · [Security](#current-security-and-privacy) · [Self-host](#build-and-self-host) · [Roadmap](#roadmap)
 
@@ -24,7 +24,7 @@ Use DeepSeek Harness on your computer from an Android phone: follow sessions, se
 
 ## Install
 
-**The official DSH-SOLO plugin comes preconfigured for the official cloud relay service. Install the plugin and Android app, then scan to pair; no server deployment or server domain entry is required.**
+**The official DSH-SOLO plugin comes preconfigured for the official cloud relay service. Install the plugin and mobile app, then scan to pair; no server deployment or server domain entry is required.**
 
 ### 1. Install the desktop plugin (recommended)
 
@@ -59,12 +59,14 @@ Without a version suffix, installation uses npm's `latest` stable tag. To pin a 
 
 </details>
 
-### 2. Download the Android app
+### 2. Download the mobile app
 
 - **[Download the latest Android APK](https://github.com/wudidiandian/dsh-solo/releases/latest/download/dsh-solo.apk)**
 - [All releases, version notes and plugin packages](https://github.com/wudidiandian/dsh-solo/releases)
 
 Install `dsh-solo.apk` on your Android phone. Check release notes for compatible versions. Packages are available directly from this project repository’s Releases.
+
+**iPhone users:** The iOS app is in external TestFlight testing. [Join the iOS beta](https://testflight.apple.com/join/fjtvUWkU). Install the free TestFlight app from the App Store first, then open the invitation link to install the beta. It is not yet a public App Store release; feedback is welcome through GitHub Issues.
 
 ### 3. Pair your phone
 
@@ -72,7 +74,7 @@ Install `dsh-solo.apk` on your Android phone. Check release notes for compatible
 2. Tap **Scan to pair** in the phone app, scan the embedded QR code and connect. The address and token are filled automatically.
 3. For manual pairing, reveal the complete encrypted pairing code on the desktop and paste it into the app. The official app already contains the official relay address.
 
-Keep DeepSeek Harness and the plugin running, with both devices online. Do not share pairing credentials. Android is the current distribution target; other platforms require additional validation.
+Keep DeepSeek Harness and the plugin running, with both devices online. Do not share pairing credentials. Android is available as a release APK; iOS is currently available for testing through TestFlight.
 
 <details>
 <summary>Desktop phone-pairing screenshot</summary>
@@ -215,7 +217,7 @@ Completed and planned capabilities are listed below. Priorities may change based
 - [x] **System notifications**: background alerts for completed tasks, pending approvals and stopped tasks, opening the session on tap.
 - [ ] **Offline push**: notifications after the app process is killed; requires FCM or vendor push channels, not implemented yet.
 - [x] **Stop tasks from the phone**: interrupt the running desktop turn from a session.
-- [ ] **iOS app**: iPhone support, build and signing setup, and TestFlight distribution.
+- [ ] **iOS app**: external TestFlight testing, further improvements and preparation for a public release.
 - [ ] **HarmonyOS app**: platform adaptation, HAP builds and device testing.
 - [ ] **Voice input**: turn speech into task text for sending instructions from a phone.
 

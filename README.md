@@ -24,7 +24,7 @@
 
 ## 安装与使用
 
-**DSH-SOLO 官方插件已内置官方云转发服务配置。普通用户只需要安装电脑端插件和 Android App，无需部署服务端，也无需填写服务器域名。** 扫码即可将手机与自己的电脑配对。
+**DSH-SOLO 官方插件已内置官方云转发服务配置。普通用户只需要安装电脑端插件和手机 App，无需部署服务端，也无需填写服务器域名。** 扫码即可将手机与自己的电脑配对。
 
 ### 1. 安装电脑端插件（推荐）
 
@@ -59,12 +59,14 @@ dsh-solo-agent
 
 </details>
 
-### 2. 下载 Android App
+### 2. 下载手机 App
 
 - **[下载最新版 Android APK](https://github.com/wudidiandian/dsh-solo/releases/latest/download/dsh-solo.apk)**
 - [查看全部 Releases、版本说明与插件安装包](https://github.com/wudidiandian/dsh-solo/releases)
 
 下载 `dsh-solo.apk` 后在 Android 手机上安装；插件与 App 的版本兼容性以发布说明为准。安装包发布在本项目仓库的 Releases，可直接下载。
+
+**iPhone 用户**：iOS 版本正在 TestFlight 外部测试中，可[加入 iOS 测试](https://testflight.apple.com/join/fjtvUWkU)。请先从 App Store 安装免费的 TestFlight，再打开邀请链接安装测试版；测试版尚未正式上架，欢迎通过项目 Issues 反馈问题。
 
 ### 3. 扫码配对
 
@@ -72,7 +74,7 @@ dsh-solo-agent
 2. 在手机 App 中点击 **扫码配对**，扫描页面内的二维码，确认后连接。地址与令牌自动填入。
 3. 不方便扫码时，在电脑配对页点击 **查看配对码**，再将完整加密配对码粘贴到 App；官方 App 已预置官方云转发地址。
 
-使用时电脑上的 DeepSeek Harness 和插件需要保持运行，电脑与手机均需联网。二维码包含设备配对凭证，请勿公开分享。Android 为当前交付目标；其他平台需要自行适配和验证。
+使用时电脑上的 DeepSeek Harness 和插件需要保持运行，电脑与手机均需联网。二维码包含设备配对凭证，请勿公开分享。Android 有正式安装包，iOS 目前通过 TestFlight 提供测试版。
 
 <details>
 <summary>查看电脑端手机配对页面（点击展开）</summary>
@@ -216,7 +218,7 @@ npm run test:go
 - [x] **系统通知**：App 后台时任务完成/待审批/任务停止的系统通知提醒，点击直达会话。
 - [ ] **离线推送**：App 进程被系统杀死后的推送，需 FCM 或厂商推送通道，尚未实现。
 - [x] **手机中断任务**：运行中会话可在手机上停止电脑端当前回合。
-- [ ] **iOS App**：适配 iPhone，打通构建、签名与 TestFlight 测试分发。
+- [ ] **iOS App**：TestFlight 外部测试中，持续完善并准备正式发布。
 - [ ] **鸿蒙端 App**：完成鸿蒙平台适配、HAP 构建与真机验证。
 - [ ] **语音输入任务**：将语音转为任务文本，方便在手机上发送指令。
 
